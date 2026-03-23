@@ -1,13 +1,18 @@
 // Required dependencies: react, @fortawesome/react-fontawesome, @fortawesome/free-solid-svg-icons
 // Tailwind CSS is used for styling (optional, or replace with your own CSS)
 // Drop this file into your React project and import/use <WordPuzzleGame />
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faCircleInfo, faChartSimple, faCheckCircle, faTimesCircle, faCircleQuestion, faHouseChimney, faList, faShareNodes } from '@fortawesome/free-solid-svg-icons';
+import { faCircleInfo, faChartSimple, faCheckCircle, faTimesCircle, faCircleQuestion, faHouseChimney, faList, faShareNodes, faChevronDown, faXmark, faEnvelope } from '@fortawesome/free-solid-svg-icons';
 import words from 'an-array-of-english-words';
 
 const GUESSES_PER_DAY = 5;
+
+/** First line of contact email body (5-Guess build) */
+const CONTACT_VERSION_LINE = 'Version: Stringlish 5-Guess';
+/** Contact form opens the user’s mail app addressed to this inbox */
+const CONTACT_TO_EMAIL = 'davisenglishco@gmail.com';
 
 // Preprocess the word list once for performance, excluding certain suffixes
 const EXCLUDED_SUFFIXES = [
@@ -68,15 +73,85 @@ async function loadTripletsData() {
   return tripletsDataPromise;
 }
 
-async function getRandomLetters() {
+const LS_DAILY = {
+  completedUtc: 'stringlich5_dailyCompletedUtc_v2',
+  abandonedUtc: 'stringlich5_dailyAbandonedUtc_v2',
+  snapshot: 'stringlich5_dailySnapshot_v2',
+  inProgress: 'stringlich5_dailyInProgress_v2',
+};
+
+/** Local calendar YYYY-MM-DD — daily letters, completion, and rollover use this (new puzzle at local midnight). */
+function getLocalDateString(d = new Date()) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function hashStringToInt(str) {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) {
+    h = ((h << 5) - h + str.charCodeAt(i)) | 0;
+  }
+  return Math.abs(h);
+}
+
+/** Display number: #1 = March 22, 2026 on the user's local calendar; #2 = Mar 23 local, etc. */
+function getLocalStringlishNumber() {
+  const now = new Date();
+  const todayLocal = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const epochLocal = new Date(2026, 2, 22);
+  const dayIndex = Math.floor((todayLocal.getTime() - epochLocal.getTime()) / 86400000);
+  return Math.max(1, dayIndex + 1);
+}
+
+function formatLocalDateLong(d = new Date()) {
+  return d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+}
+
+function readDailyCompletedUtc() {
+  try {
+    return localStorage.getItem(LS_DAILY.completedUtc);
+  } catch (_) {
+    return null;
+  }
+}
+
+function readDailyAbandonedUtc() {
+  try {
+    return localStorage.getItem(LS_DAILY.abandonedUtc);
+  } catch (_) {
+    return null;
+  }
+}
+
+function saveDailyCompletionSnapshot(snapshot) {
+  try {
+    localStorage.setItem(LS_DAILY.snapshot, JSON.stringify(snapshot));
+    localStorage.setItem(LS_DAILY.completedUtc, snapshot.puzzleDate);
+    localStorage.removeItem(LS_DAILY.abandonedUtc);
+    localStorage.removeItem(LS_DAILY.inProgress);
+  } catch (_) {}
+}
+
+function markDailyAbandonedForLocalDate(dateStr) {
+  try {
+    localStorage.setItem(LS_DAILY.abandonedUtc, dateStr);
+    localStorage.removeItem(LS_DAILY.inProgress);
+  } catch (_) {}
+}
+
+/** Same letters for every player sharing the same local calendar date string (deterministic from CSV pool). */
+async function getDailyLetters(puzzleDateStr) {
   const data = await loadTripletsData();
   if (!data || data.length === 0) {
-    return 'THE'; // only if CSV failed to load or is empty; letters still conceptually from CSV column B
+    return 'THE';
   }
-  const filteredData = data.filter(item => item.frequency >= 10);
+  const filteredData = data.filter((item) => item.frequency >= 10);
   const pool = filteredData.length > 0 ? filteredData : data;
-  const selected = pool[Math.floor(Math.random() * pool.length)];
-  return selected.letters;
+  const h = hashStringToInt(`stringlich5-daily-${puzzleDateStr}`);
+  const idx = h % pool.length;
+  return pool[idx].letters;
 }
 
 function isSequential(word, letters) {
@@ -133,7 +208,7 @@ async function getOnePossibleAnswer(letters) {
 }
 
 // Get possible answers from CSV columns C-L for the chosen triplet (for game over display and hint source).
-// Triplets always come from the CSV (getRandomLetters), so the row always exists and has answers.
+// Triplets always come from the CSV (getDailyLetters), so the row always exists and has answers.
 async function getPossibleAnswersFromCsv(letters, max = 5) {
   const data = await loadTripletsData();
   if (!data || !letters || letters.length !== 3) return [];
@@ -147,7 +222,7 @@ async function getPossibleAnswersFromCsv(letters, max = 5) {
 
 // Component to display possible answers from CSV (game over). ensureIncluded (hint word) is always
 // shown first and counts toward max, so the hint always appears in the list.
-function PossibleAnswersFromCsv({ letters, max = 5, ensureIncluded }) {
+function PossibleAnswersFromCsv({ letters, max = 5, ensureIncluded, className = '' }) {
   const [answers, setAnswers] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -172,12 +247,87 @@ function PossibleAnswersFromCsv({ letters, max = 5, ensureIncluded }) {
     return () => { isMounted = false; };
   }, [letters, max, ensureIncluded]);
 
-  if (loading) return <div className="text-xs text-gray-400">Loading...</div>;
-  if (answers.length === 0) return <div className="text-xs text-gray-400">No answers found</div>;
+  // Base was calc(0.875rem + 6pt) / calc(0.75rem + 6pt); scaled down 45% → ×0.55
+  const wordFs = 'calc(0.875rem * 0.55 + 6pt * 0.55)';
+  const lenFs = 'calc(0.75rem * 0.55 + 6pt * 0.55)';
+  if (loading) return <div className="text-gray-400" style={{ fontSize: lenFs }}>Loading...</div>;
+  if (answers.length === 0) return <div className="text-gray-400" style={{ fontSize: lenFs }}>No answers found</div>;
   const toTitleCase = (s) => s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
   return (
-    <div className="text-xs text-gray-700">
-      {answers.map(toTitleCase).join(', ')}
+    <div className="flex flex-wrap justify-center gap-2 max-w-md mx-auto">
+      {answers.map((w) => (
+        <div
+          key={w}
+          className="rounded-lg px-3 py-1 flex items-center space-x-1 bg-gray-100 border border-gray-200"
+        >
+          <span className="font-medium text-gray-800" style={{ fontSize: wordFs }}>
+            {toTitleCase(w)}
+          </span>
+          <span className="text-gray-600" style={{ fontSize: lenFs }}>
+            ({w.length})
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** L–I–N in game colors (rules wizard steps 1–3) */
+function RulesWizardLinShapes() {
+  return (
+    <div className="flex justify-center space-x-2 mb-4">
+      <div
+        style={{
+          width: 44,
+          height: 44,
+          background: '#c85f31',
+          borderRadius: '50%',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: 'white',
+          fontWeight: 600,
+          fontSize: '1.35rem',
+          boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+        }}
+      >
+        L
+      </div>
+      <div
+        style={{
+          width: 44,
+          height: 44,
+          background: '#195b7c',
+          borderRadius: 8,
+          transform: 'rotate(45deg) scale(0.85)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: 'white',
+          fontWeight: 600,
+          fontSize: '1.35rem',
+          boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+        }}
+      >
+        <span style={{ transform: 'rotate(-45deg) scale(1.176)', display: 'inline-block', width: '100%', textAlign: 'center' }}>I</span>
+      </div>
+      <div
+        style={{
+          width: 44,
+          height: 44,
+          background: '#1c6d2a',
+          borderRadius: 8,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: 'white',
+          fontWeight: 600,
+          fontSize: '1.35rem',
+          boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+        }}
+      >
+        N
+      </div>
     </div>
   );
 }
@@ -200,6 +350,8 @@ export default function WordPuzzleGame() {
   const [revealAnimationPlayedThisRound, setRevealAnimationPlayedThisRound] = useState(false);
   const [showAllWords, setShowAllWords] = useState(false);
   const [showStats, setShowStats] = useState(false);
+  /** When true, Statistics modal shows the round result banner (Better Luck / Nicely Done / …). Shown after a finished round, game-over stats, or Behold Your Work — not from home/mid-game stats alone. */
+  const [statsShowGameResultBanner, setStatsShowGameResultBanner] = useState(false);
   const [showInstructions, setShowInstructions] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [stats, setStats] = useState({
@@ -214,6 +366,19 @@ export default function WordPuzzleGame() {
   const [showRules, setShowRules] = useState(false);
   const [rulesModalClosing, setRulesModalClosing] = useState(false);
   const [statsModalClosing, setStatsModalClosing] = useState(false);
+  /** Hidden by default; click chart icon in Statistics modal to show (testing) */
+  const [showClearStatsButton, setShowClearStatsButton] = useState(false);
+  /** Bump when daily localStorage (completed/abandoned) changes so home UI re-reads */
+  const [dailyUiEpoch, setDailyUiEpoch] = useState(0);
+  const lastLocalDateRef = useRef(getLocalDateString());
+  const roundStartedRef = useRef(false);
+  const gameOverRef = useRef(false);
+  useEffect(() => {
+    roundStartedRef.current = roundStarted;
+  }, [roundStarted]);
+  useEffect(() => {
+    gameOverRef.current = gameOver;
+  }, [gameOver]);
   const [showRulesOnStart, setShowRulesOnStart] = useState(() => {
     try {
       const stored = localStorage.getItem('sequenceGameV2_5guessShowRulesOnStart');
@@ -222,6 +387,9 @@ export default function WordPuzzleGame() {
       return true;
     }
   });
+  const [rulesWizardStep, setRulesWizardStep] = useState(0); // 0–3 (four steps)
+  const prevRulesWizardStepRef = useRef(0);
+  const rulesWizardTouchStartRef = useRef(null);
   const rulesDismissedOnceRef = useRef(false);
   const hintTimerStartedThisRoundRef = useRef(false);
   const [hintWord, setHintWord] = useState(null);
@@ -229,10 +397,22 @@ export default function WordPuzzleGame() {
   const [hintAvailable, setHintAvailable] = useState(false);
   const [hintFillProgress, setHintFillProgress] = useState(0);
   const [hintReadyPop, setHintReadyPop] = useState(false);
-  const [needsScrollForKeyboard, setNeedsScrollForKeyboard] = useState(false);
+  const [viewportWidth, setViewportWidth] = useState(() => (typeof window !== 'undefined' ? window.innerWidth : 375));
+  const [viewportHeight, setViewportHeight] = useState(() => (typeof window !== 'undefined' ? window.innerHeight : 667));
   const [pressedKey, setPressedKey] = useState(null);
+  const [mobileShiftActive, setMobileShiftActive] = useState(false);
+  const [mobileCapsLock, setMobileCapsLock] = useState(false);
   const [showMobileGuessList, setShowMobileGuessList] = useState(false);
+  const [guessListPopupPosition, setGuessListPopupPosition] = useState(null); // { top, left, width } — anchored to list button
+  const [showContactModal, setShowContactModal] = useState(false);
+  const [contactEmail, setContactEmail] = useState('');
+  const [contactSubject, setContactSubject] = useState('');
+  const [contactMessage, setContactMessage] = useState('');
+  const mobileShiftOnAtRef = useRef(0);
+  const mobileShiftActiveRef = useRef(false);
+  const mobileCapsLockRef = useRef(false);
   const mobileGuessListSnapshotRef = useRef([]); // snapshot when opening to avoid re-render loops
+  const mobileGuessListBtnRef = useRef(null);
   const hintUnlockTimeoutRef = useRef(null);
   const hintFillIntervalRef = useRef(null);
   const inputRef = useRef(null);
@@ -240,19 +420,36 @@ export default function WordPuzzleGame() {
   const handleKeyboardLetterRef = useRef(null);
   const inputContainerRef = useRef(null);
   const inputMeasureRef = useRef(null);
-  const contentAboveKeyboardRef = useRef(null);
   const lastKeyPressRef = useRef({ key: null, time: 0 });
   const backspaceHoldTimeoutRef = useRef(null);
   const backspaceHoldIntervalRef = useRef(null);
   const prevScoreRef = useRef(0);
   const isSubmittingRef = useRef(false);
-  const KEYBOARD_BOTTOM_OFFSET = 10;
-  const KEYBOARD_HEIGHT_ESTIMATE = 280;
-  const KEYBOARD_GAP_MIN = 0;
-
   useEffect(() => {
     (async () => {
-      setLetters(await getRandomLetters());
+      const puzzleDay = getLocalDateString();
+      lastLocalDateRef.current = puzzleDay;
+      if (readDailyCompletedUtc() !== puzzleDay && readDailyAbandonedUtc() !== puzzleDay) {
+        const raw = localStorage.getItem(LS_DAILY.inProgress);
+        if (raw) {
+          try {
+            const o = JSON.parse(raw);
+            const savedDay = o.puzzleDate || o.utcDate;
+            if (savedDay === puzzleDay && o.letters) {
+              setLetters(o.letters);
+              setValidWords(o.validWords || []);
+              setScore(o.score ?? 0);
+              setGuessesRemaining(o.guessesRemaining ?? GUESSES_PER_DAY);
+              setHintWord(o.hintWord ?? null);
+              setRoundStarted(true);
+              setRevealAnimationPlayedThisRound(true);
+              setShowRevealAnimation(false);
+              return;
+            }
+          } catch (_) {}
+        }
+      }
+      setLetters(await getDailyLetters(puzzleDay));
     })();
     // Load stats from localStorage - version specific
     const savedStats = localStorage.getItem('sequenceGameStats_v2_5guess');
@@ -260,83 +457,99 @@ export default function WordPuzzleGame() {
       setStats(JSON.parse(savedStats));
     }
     
-    // Detect mobile/tablet (show virtual keyboard for phones and tablets)
+    // Detect mobile/tablet (show virtual keyboard for phones and tablets) and track viewport for keyboard scaling
     const checkMobile = () => {
-      setIsMobile(window.innerWidth <= 1024);
+      const w = typeof window !== 'undefined' && window.visualViewport ? window.visualViewport.width : window.innerWidth;
+      const h = typeof window !== 'undefined' && window.visualViewport ? window.visualViewport.height : window.innerHeight;
+      setIsMobile((typeof window !== 'undefined' ? window.innerWidth : 1024) <= 1024);
+      setViewportWidth(w);
+      setViewportHeight(h);
     };
     
     checkMobile();
     window.addEventListener('resize', checkMobile);
+    if (typeof window !== 'undefined' && window.visualViewport) {
+      window.visualViewport.addEventListener('resize', checkMobile);
+      window.visualViewport.addEventListener('scroll', checkMobile);
+    }
     
-    return () => window.removeEventListener('resize', checkMobile);
+    return () => {
+      window.removeEventListener('resize', checkMobile);
+      if (typeof window !== 'undefined' && window.visualViewport) {
+        window.visualViewport.removeEventListener('resize', checkMobile);
+        window.visualViewport.removeEventListener('scroll', checkMobile);
+      }
+    };
   }, []);
 
   useEffect(() => {
     if (!roundStarted) return;
+    // Replaying "Behold Your Work" sets gameOver + guessesRemaining in one update; do not re-apply stats
+    if (gameOver) return;
     if (guessesRemaining <= 0 && !manuallyEnded) {
       // Add delay to allow final dot animation to complete
       setTimeout(() => {
         setGameOver(true);
         // Update stats when game ends
         updateStats();
-        // Show stats modal automatically after a brief delay
-        setTimeout(() => setShowStats(true), 500);
+        // Show stats modal automatically after a brief delay (with round-result banner)
+        setTimeout(() => {
+          setStatsShowGameResultBanner(true);
+          setShowStats(true);
+        }, 500);
       }, 600); // Slightly longer than the dot animation duration
     }
-  }, [guessesRemaining, roundStarted, manuallyEnded]);
+  }, [guessesRemaining, roundStarted, manuallyEnded, gameOver]);
 
-  // When mobile + keyboard shown: allow scroll if content would overlap keyboard (debounced to avoid re-render loops)
   useEffect(() => {
-    if (!isMobile || !roundStarted || gameOver) {
-      setNeedsScrollForKeyboard(false);
-      return;
+    if (showRules) {
+      setRulesWizardStep(0);
+      prevRulesWizardStepRef.current = 0;
     }
-    let rafId = null;
-    let timeoutId = null;
-    const lastValueRef = { current: null };
-    const checkOverlap = () => {
-      const el = contentAboveKeyboardRef.current;
-      if (!el) return;
-      const rect = el.getBoundingClientRect();
-      const contentBottom = rect.bottom;
-      const keyboardTop = window.innerHeight - KEYBOARD_BOTTOM_OFFSET - KEYBOARD_HEIGHT_ESTIMATE;
-      const threshold = keyboardTop - KEYBOARD_GAP_MIN;
-      const next = contentBottom > threshold;
-      if (lastValueRef.current !== next) {
-        lastValueRef.current = next;
-        setNeedsScrollForKeyboard(next);
-      }
-    };
-    const scheduleCheck = () => {
-      if (rafId != null) cancelAnimationFrame(rafId);
-      rafId = requestAnimationFrame(() => {
-        rafId = null;
-        ensureObserver();
-        checkOverlap();
-      });
-    };
-    const debouncedCheck = () => {
-      if (timeoutId != null) clearTimeout(timeoutId);
-      timeoutId = setTimeout(scheduleCheck, 80);
-    };
-    let ro;
-    const roCb = () => { debouncedCheck(); };
-    const ensureObserver = () => {
-      if (!ro && contentAboveKeyboardRef.current) {
-        ro = new ResizeObserver(roCb);
-        ro.observe(contentAboveKeyboardRef.current);
-      }
-    };
-    scheduleCheck();
-    timeoutId = setTimeout(() => { ensureObserver(); scheduleCheck(); }, 100);
-    window.addEventListener('resize', debouncedCheck);
+  }, [showRules]);
+
+  const rulesWizardSlideDir =
+    rulesWizardStep > prevRulesWizardStepRef.current
+      ? 'next'
+      : rulesWizardStep < prevRulesWizardStepRef.current
+        ? 'prev'
+        : 'next';
+
+  useLayoutEffect(() => {
+    prevRulesWizardStepRef.current = rulesWizardStep;
+  }, [rulesWizardStep]);
+
+  const updateGuessListPopupPosition = useCallback(() => {
+    const el = mobileGuessListBtnRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const padding = 10;
+    const maxW = 320;
+    const w = Math.min(maxW, window.innerWidth - padding * 2);
+    let left = Math.max(padding, Math.min(r.left, window.innerWidth - padding - w));
+    const top = r.bottom + 8;
+    setGuessListPopupPosition({ top, left, width: w });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!showMobileGuessList) return;
+    updateGuessListPopupPosition();
+    window.addEventListener('resize', updateGuessListPopupPosition);
+    window.addEventListener('scroll', updateGuessListPopupPosition, true);
+    const vv = typeof window !== 'undefined' ? window.visualViewport : null;
+    if (vv) {
+      vv.addEventListener('resize', updateGuessListPopupPosition);
+      vv.addEventListener('scroll', updateGuessListPopupPosition);
+    }
     return () => {
-      if (rafId != null) cancelAnimationFrame(rafId);
-      if (timeoutId != null) clearTimeout(timeoutId);
-      if (ro) ro.disconnect();
-      window.removeEventListener('resize', debouncedCheck);
+      window.removeEventListener('resize', updateGuessListPopupPosition);
+      window.removeEventListener('scroll', updateGuessListPopupPosition, true);
+      if (vv) {
+        vv.removeEventListener('resize', updateGuessListPopupPosition);
+        vv.removeEventListener('scroll', updateGuessListPopupPosition);
+      }
     };
-  }, [isMobile, roundStarted, gameOver]);
+  }, [showMobileGuessList, updateGuessListPopupPosition]);
 
   // Keep inputValueRef in sync with input state so mobile Submit has source of truth
   useEffect(() => {
@@ -345,7 +558,10 @@ export default function WordPuzzleGame() {
 
   // Close mobile guess list when round/game state changes
   useEffect(() => {
-    if (gameOver || !roundStarted) setShowMobileGuessList(false);
+    if (gameOver || !roundStarted) {
+      setShowMobileGuessList(false);
+      setGuessListPopupPosition(null);
+    }
   }, [gameOver, roundStarted]);
 
   const startHintFillTimer = () => {
@@ -409,6 +625,79 @@ export default function WordPuzzleGame() {
     return clearHintTimers;
   }, []);
 
+  // Persist in-progress daily game so refresh can resume the same local-calendar-day puzzle
+  useEffect(() => {
+    if (!roundStarted || gameOver) return;
+    const puzzleDay = getLocalDateString();
+    if (readDailyCompletedUtc() === puzzleDay) return;
+    const payload = {
+      puzzleDate: puzzleDay,
+      letters,
+      validWords,
+      score,
+      guessesRemaining,
+      hintWord,
+      manuallyEnded,
+    };
+    try {
+      localStorage.setItem(LS_DAILY.inProgress, JSON.stringify(payload));
+    } catch (_) {}
+  }, [roundStarted, gameOver, letters, validWords, score, guessesRemaining, hintWord, manuallyEnded]);
+
+  // New puzzle when the user's local calendar day changes (not at UTC midnight)
+  useEffect(() => {
+    const handleLocalDayTick = async () => {
+      const puzzleDay = getLocalDateString();
+      if (puzzleDay === lastLocalDateRef.current) return;
+      const prevDay = lastLocalDateRef.current;
+      lastLocalDateRef.current = puzzleDay;
+      setDailyUiEpoch((e) => e + 1);
+      if (roundStartedRef.current && !gameOverRef.current) {
+        markDailyAbandonedForLocalDate(prevDay);
+        setStats((prev) => {
+          const next = { ...prev, currentStreak: 0 };
+          try {
+            localStorage.setItem('sequenceGameStats_v2_5guess', JSON.stringify(next));
+          } catch (_) {}
+          return next;
+        });
+      }
+      setRoundStarted(false);
+      setGameOver(false);
+      setShowRevealAnimation(false);
+      setShowAllWords(false);
+      setShowStats(false);
+      setShowClearStatsButton(false);
+      setShowInstructions(false);
+      setInput('');
+      inputValueRef.current = '';
+      setValidWords([]);
+      setScore(0);
+      setError(false);
+      setErrorMessage('');
+      setGuessesRemaining(GUESSES_PER_DAY);
+      setLetterPopup(null);
+      setManuallyEnded(false);
+      setHintWord(null);
+      setHintAvailable(false);
+      setHintFillProgress(0);
+      setHintReadyPop(false);
+      clearHintTimers();
+      hintTimerStartedThisRoundRef.current = false;
+      setLetters(await getDailyLetters(puzzleDay));
+    };
+    const id = setInterval(handleLocalDayTick, 60000);
+    const onVis = () => {
+      handleLocalDayTick();
+    };
+    document.addEventListener('visibilitychange', onVis);
+    handleLocalDayTick();
+    return () => {
+      clearInterval(id);
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, []);
+
   // Scale input font down only once text width exceeds ~15 letters (container-based max width)
   const measureInputFontSize = () => {
     if (!input) {
@@ -442,7 +731,45 @@ export default function WordPuzzleGame() {
     };
   }, [input]);
 
+  const handleBeholdYourWork = () => {
+    const raw = localStorage.getItem(LS_DAILY.snapshot);
+    if (!raw) return;
+    let snap;
+    try {
+      snap = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    const snapDay = snap.puzzleDate || snap.utcDate;
+    if (snapDay !== getLocalDateString()) return;
+    setLetters(snap.letters);
+    setValidWords(snap.validWords || []);
+    setScore(snap.score ?? 0);
+    setGuessesRemaining(snap.guessesRemaining ?? 0);
+    setManuallyEnded(!!snap.manuallyEnded);
+    setHintWord(snap.hintWord ?? null);
+    setGameOver(true);
+    setRoundStarted(true);
+    setShowRevealAnimation(false);
+    setRevealAnimationPlayedThisRound(true);
+    const invalidCount =
+      typeof snap.invalidCount === 'number'
+        ? snap.invalidCount
+        : (snap.validWords || []).filter((w) => !w.isValid).length;
+    localStorage.setItem('currentRoundMistakes_v2_5guess', String(invalidCount));
+    localStorage.setItem('currentRoundScore_v2_5guess', String(snap.score ?? 0));
+    const validWordsThisRound = (snap.validWords || []).filter((w) => w.isValid);
+    localStorage.setItem('currentRoundLongestWords_v2_5guess', JSON.stringify(validWordsThisRound));
+    setTimeout(() => {
+      setStatsShowGameResultBanner(true);
+      setShowStats(true);
+    }, 500);
+  };
+
   const handleBegin = () => {
+    const puzzleDay = getLocalDateString();
+    if (readDailyCompletedUtc() === puzzleDay) return;
+    if (readDailyAbandonedUtc() === puzzleDay) return;
     setShowRevealAnimation(true);
     setRevealAnimationPlayedThisRound(false);
     // Start the game after the reveal animation completes
@@ -615,9 +942,24 @@ export default function WordPuzzleGame() {
     
     setStats(tempStats);
     localStorage.setItem('sequenceGameStats_v2_5guess', JSON.stringify(tempStats));
-    
-    // Show stats modal automatically after a brief delay
-    setTimeout(() => setShowStats(true), 500);
+
+    saveDailyCompletionSnapshot({
+      puzzleDate: getLocalDateString(),
+      letters,
+      validWords: newValidWords,
+      score,
+      guessesRemaining: 0,
+      manuallyEnded: true,
+      hintWord,
+      invalidCount,
+    });
+    setDailyUiEpoch((e) => e + 1);
+
+    // Show stats modal automatically after a brief delay (with round-result banner)
+    setTimeout(() => {
+      setStatsShowGameResultBanner(true);
+      setShowStats(true);
+    }, 500);
   };
 
   const handleHint = async () => {
@@ -645,28 +987,40 @@ export default function WordPuzzleGame() {
   };
 
   const resetGame = () => {
-    // If game was started but not finished, reset streak to 0
     if (roundStarted && !gameOver) {
-          const newStats = { ...stats };
-    newStats.currentStreak = 0;
-    setStats(newStats);
-    localStorage.setItem('sequenceGameStats_v2_5guess', JSON.stringify(newStats));
+      const newStats = { ...stats };
+      newStats.currentStreak = 0;
+      setStats(newStats);
+      localStorage.setItem('sequenceGameStats_v2_5guess', JSON.stringify(newStats));
+      markDailyAbandonedForLocalDate(getLocalDateString());
+      setDailyUiEpoch((e) => e + 1);
     }
-    
+
     setRoundStarted(false);
     setShowRevealAnimation(false);
     setShowAllWords(false);
     setShowStats(false);
+    setShowClearStatsButton(false);
     setShowInstructions(false);
-    (async () => setLetters(await getRandomLetters()))();
-    setInput(''); inputValueRef.current = ''; setValidWords([]); setScore(0);
-    setError(false); setErrorMessage(''); setGuessesRemaining(GUESSES_PER_DAY);
-    setGameOver(false); setLetterPopup(null); setManuallyEnded(false);
+    (async () => {
+      setLetters(await getDailyLetters(getLocalDateString()));
+    })();
+    setInput('');
+    inputValueRef.current = '';
+    setValidWords([]);
+    setScore(0);
+    setError(false);
+    setErrorMessage('');
+    setGuessesRemaining(GUESSES_PER_DAY);
+    setGameOver(false);
+    setLetterPopup(null);
+    setManuallyEnded(false);
     setHintWord(null);
     setHintAvailable(false);
     setHintFillProgress(0);
     setHintReadyPop(false);
     clearHintTimers();
+    hintTimerStartedThisRoundRef.current = false;
   };
 
   const updateStats = () => {
@@ -751,6 +1105,18 @@ export default function WordPuzzleGame() {
     
     setStats(newStats);
     localStorage.setItem('sequenceGameStats_v2_5guess', JSON.stringify(newStats));
+
+    saveDailyCompletionSnapshot({
+      puzzleDate: getLocalDateString(),
+      letters,
+      validWords,
+      score,
+      guessesRemaining,
+      manuallyEnded,
+      hintWord,
+      invalidCount,
+    });
+    setDailyUiEpoch((e) => e + 1);
   };
 
   const handleInputChange = (e) => {
@@ -930,12 +1296,103 @@ export default function WordPuzzleGame() {
     { shape: 'diamond', color: '#195b7c' },
     { shape: 'square', color: '#1c6d2a' }
   ];
-  const size = 80;
+  /** Main “provided letters” shapes — match my-app-ver4 (92px, 1.95rem letter size) */
+  const size = 92;
+
+  const closeRulesModal = () => {
+    rulesDismissedOnceRef.current = true;
+    setRulesModalClosing(true);
+    setShowRules(false);
+    setTimeout(() => {
+      setRulesModalClosing(false);
+      setTimeout(() => setRevealAnimationPlayedThisRound(true), 500);
+      setTimeout(() => inputRef.current?.focus(), 100);
+    }, 200);
+  };
+
+  const handleRulesWizardTouchStart = (e) => {
+    if (!isMobile) return;
+    const t = e.touches[0];
+    rulesWizardTouchStartRef.current = { x: t.clientX, y: t.clientY };
+  };
+
+  const handleRulesWizardTouchEnd = (e) => {
+    if (!isMobile || !rulesWizardTouchStartRef.current) return;
+    const t = e.changedTouches[0];
+    const start = rulesWizardTouchStartRef.current;
+    rulesWizardTouchStartRef.current = null;
+    const dx = t.clientX - start.x;
+    const dy = t.clientY - start.y;
+    const minSwipe = 48;
+    if (Math.abs(dx) < minSwipe) return;
+    if (Math.abs(dy) > Math.abs(dx) * 1.15) return;
+    if (dx < 0) {
+      setRulesWizardStep((s) => Math.min(3, s + 1));
+    } else {
+      setRulesWizardStep((s) => Math.max(0, s - 1));
+    }
+  };
+
+  /** Fixed footer (Contact + copyright); reserve space so content sits above it */
+  const footerBarVisible =
+    !(isMobile && roundStarted && !gameOver) && !(showRules || rulesModalClosing);
+
+  /** Version line is only in the outgoing email body, not shown in the modal */
+  const buildContactMailBody = () => {
+    const msg = contactMessage.trim();
+    const em = contactEmail.trim();
+    if (em) {
+      return `${CONTACT_VERSION_LINE}\nFrom: ${em}\n\n${msg}`;
+    }
+    return `${CONTACT_VERSION_LINE}\n${msg}`;
+  };
+
+  const handleSendContact = () => {
+    const msg = contactMessage.trim();
+    if (!msg) return;
+    const subj = contactSubject.trim() || 'Stringlish 5-Guess — Contact';
+    window.location.href = `mailto:${CONTACT_TO_EMAIL}?subject=${encodeURIComponent(subj)}&body=${encodeURIComponent(buildContactMailBody())}`;
+    setShowContactModal(false);
+    setContactEmail('');
+    setContactSubject('');
+    setContactMessage('');
+  };
+
+  const closeContactModal = () => {
+    setShowContactModal(false);
+    setContactEmail('');
+    setContactSubject('');
+    setContactMessage('');
+  };
+
+  const dailyHomeMeta = useMemo(() => {
+    void dailyUiEpoch; // bump re-reads localStorage when daily completion/abandon changes
+    const puzzleDay = getLocalDateString();
+    return {
+      puzzleDay,
+      completedToday: readDailyCompletedUtc() === puzzleDay,
+      abandonedToday: readDailyAbandonedUtc() === puzzleDay,
+      puzzleNumber: getLocalStringlishNumber(),
+      dateLabel: formatLocalDateLong(new Date()),
+    };
+  }, [dailyUiEpoch]);
 
   return (
-    <div className={isMobile ? (needsScrollForKeyboard ? "min-h-[100dvh] flex flex-col" : "h-[100dvh] max-h-[100dvh] flex flex-col overflow-hidden") : ""}>
-      <div className={isMobile ? `flex-1 min-h-0 ${needsScrollForKeyboard ? "overflow-y-auto pb-[5px]" : "overflow-hidden pb-[320px]"}` : ""}>
-    <div className="p-6 max-w-xl mx-auto text-center space-y-6 relative overflow-hidden">
+    <div className={isMobile ? 'flex flex-col min-h-0' : ''}>
+      <div
+        className={
+          isMobile
+            ? `flex-1 min-h-0 overflow-y-auto ${
+                footerBarVisible
+                  ? 'pb-[5.5rem]'
+                  : 'pb-[max(12px,env(safe-area-inset-bottom,0px))]'
+              }`
+            : footerBarVisible
+              ? 'pb-[5.5rem]'
+              : ''
+        }
+      >
+    <div className={`p-6 max-w-xl mx-auto text-center space-y-6 relative overflow-hidden ${roundStarted ? 'pt-16' : ''}`}>
       <div className="flex justify-center items-center relative flex-col">
         {!roundStarted && (
           <>
@@ -945,72 +1402,78 @@ export default function WordPuzzleGame() {
             >
               <img 
                 src={process.env.PUBLIC_URL + "/letter-game-logo2.png"} 
-                alt="Sequence Game Logo" 
+                alt="Stringlish logo" 
                 className="w-24 h-24 mb-4 object-contain"
                 onError={(e) => {
                   e.target.style.display = 'none';
                 }}
               />
             </a>
-            <h1 className="text-3xl font-bold">Sequence</h1>
+            <h1 className="text-3xl font-bold">Stringlish</h1>
+            <p className="text-lg font-medium text-gray-600 mt-1">5-Guess</p>
           </>
         )}
         {!roundStarted && (
-          <p className="text-gray-500 italic mt-4 text-center">
-            Make words.<br />
-            Tickle your brain.
-          </p>
+          <div className="mt-4 text-center space-y-1">
+            <p className="text-base font-semibold text-gray-800">Stringlish #{dailyHomeMeta.puzzleNumber}</p>
+            <p className="text-sm text-gray-500">{dailyHomeMeta.dateLabel}</p>
+          </div>
         )}
         {roundStarted && (
           <>
-            {/* Top bar: Score (left) and header controls (right) */}
-            <div className="flex items-center w-full mb-1">
-              <div className="flex-1 min-w-0 flex items-center">
-                {!gameOver && (
-                  <span className="tabular-nums border border-gray-300 rounded px-2 py-1 bg-gray-50">
-                    <span
-                      className={`inline-block text-base font-semibold ${
-                        scorePopping ? 'score-pop' : 'text-gray-700'
-                      }`}
-                    >
-                      Score: {score}
+            {/* Sticky top bar: Score (left), controls (center), Give Up (right) */}
+            <div className="fixed top-0 left-0 right-0 z-30 bg-white border-b border-gray-200">
+              <div className="max-w-xl mx-auto px-6 py-2 flex items-center">
+                <div className="flex-1 min-w-0 flex items-center">
+                  {!gameOver && (
+                    <span className="tabular-nums border border-gray-300 rounded px-2 py-1 bg-gray-50">
+                      <span
+                        className={`inline-block text-base font-semibold ${
+                          scorePopping ? 'score-pop' : 'text-gray-700'
+                        }`}
+                      >
+                        Score: {score}
+                      </span>
                     </span>
-                  </span>
-                )}
-              </div>
-              <div className="flex items-center justify-center flex-shrink-0 space-x-3">
-                <a 
-                  href="https://davisenglish.github.io/sequence-game-home/"
-                  className="text-gray-600 hover:text-gray-800 transition-colors"
-                  title="Home"
-                >
-                  <FontAwesomeIcon icon={faHouseChimney} className="text-lg" />
-                </a>
-                <button 
-                  onClick={() => setShowStats(true)}
-                  className="text-gray-600 hover:text-gray-800 transition-colors"
-                  title="Statistics"
-                >
-                  <FontAwesomeIcon icon={faChartSimple} className="text-lg" />
-                </button>
-                <button 
-                  onClick={() => setShowRules(true)}
-                  className="text-gray-500 hover:text-gray-700 transition-colors"
-                  title="Rules"
-                >
-                  <FontAwesomeIcon icon={faCircleQuestion} className="text-xl" />
-                </button>
-              </div>
-              <div className="flex-1 min-w-0 flex items-center justify-end">
-                {!gameOver && (
-                  <button
-                    type="button"
-                    onClick={handleEndGame}
-                    className="text-sm text-gray-500 hover:text-gray-700 transition-colors"
+                  )}
+                </div>
+                <div className="flex items-center justify-center flex-shrink-0 space-x-3">
+                  <a 
+                    href="https://davisenglish.github.io/sequence-game-home/"
+                    className="text-gray-600 hover:text-gray-800 transition-colors"
+                    title="Home"
                   >
-                    Give Up?
+                    <FontAwesomeIcon icon={faHouseChimney} className="text-lg" />
+                  </a>
+                  <button 
+                    onClick={() => {
+                      setStatsShowGameResultBanner(gameOver);
+                      setShowStats(true);
+                    }}
+                    className="text-gray-600 hover:text-gray-800 transition-colors"
+                    title="Statistics"
+                  >
+                    <FontAwesomeIcon icon={faChartSimple} className="text-lg" />
                   </button>
-                )}
+                  <button 
+                    onClick={() => setShowRules(true)}
+                    className="text-gray-500 hover:text-gray-700 transition-colors"
+                    title="Rules"
+                  >
+                    <FontAwesomeIcon icon={faCircleQuestion} className="text-xl" />
+                  </button>
+                </div>
+                <div className="flex-1 min-w-0 flex items-center justify-end">
+                  {!gameOver && (
+                    <button
+                      type="button"
+                      onClick={handleEndGame}
+                      className="text-sm text-gray-500 hover:text-gray-700 transition-colors"
+                    >
+                      Give Up?
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -1035,7 +1498,28 @@ export default function WordPuzzleGame() {
 
       {!roundStarted ? (
         <div className="flex flex-col items-center space-y-3">
-        <button onClick={handleBegin} className="bg-white border border-gray-400 text-black w-52 h-16 text-xl font-semibold rounded">BEGIN : 5-GUESS</button>
+          {dailyHomeMeta.completedToday ? (
+            <button
+              type="button"
+              onClick={handleBeholdYourWork}
+              className="bg-white border border-gray-400 text-black w-52 h-16 text-xl font-semibold rounded flex items-center justify-center gap-2"
+            >
+              <span className="select-none" aria-hidden>🤩</span>
+              Behold Your Work
+            </button>
+          ) : dailyHomeMeta.abandonedToday ? (
+            <p className="text-sm text-gray-600 text-center max-w-xs px-2">
+              You left today&apos;s puzzle unfinished. Come back tomorrow for the next one.
+            </p>
+          ) : (
+            <button
+              type="button"
+              onClick={handleBegin}
+              className="bg-white border border-gray-400 text-black w-52 h-16 text-xl font-semibold rounded"
+            >
+              BEGIN
+            </button>
+          )}
           <div className="flex flex-row items-center space-x-4">
             <a 
               href="https://davisenglish.github.io/sequence-game-home/"
@@ -1044,7 +1528,14 @@ export default function WordPuzzleGame() {
             >
               <FontAwesomeIcon icon={faHouseChimney} className="text-lg" />
             </a>
-            <button onClick={() => setShowStats(true)} className="text-gray-600 hover:text-gray-800 transition-colors" title="Statistics">
+            <button
+              onClick={() => {
+                setStatsShowGameResultBanner(false);
+                setShowStats(true);
+              }}
+              className="text-gray-600 hover:text-gray-800 transition-colors"
+              title="Statistics"
+            >
               <FontAwesomeIcon icon={faChartSimple} className="text-lg" />
             </button>
             <button onClick={() => setShowRules(true)} className="text-gray-500 hover:text-gray-700 transition-colors" title="Rules">
@@ -1054,7 +1545,6 @@ export default function WordPuzzleGame() {
         </div>
       ) : (gameOver || showRules) ? null : (
         <div className={`space-y-4 ${showRevealAnimation && !revealAnimationPlayedThisRound ? 'reveal-content' : ''}`}>
-          {/* Provided letters */}
           <div className="flex justify-center space-x-3 items-center">
           {letters.split('').map((char, idx) => {
             const { shape, color } = shapes[idx];
@@ -1065,7 +1555,7 @@ export default function WordPuzzleGame() {
               alignItems:'center', 
               justifyContent:'center', 
               color:'white', 
-              fontSize:'1.75rem', 
+              fontSize:'1.95rem', 
               fontWeight:'600',
               boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
               transition: 'all 0.2s ease-in-out'
@@ -1114,7 +1604,7 @@ export default function WordPuzzleGame() {
           })}
           </div>
           {/* Input section */}
-          <div ref={contentAboveKeyboardRef} className="space-y-4">
+          <div className="space-y-4">
                 <div
                   ref={inputContainerRef}
                   className={`border-0 border-b rounded-none ${error ? 'border-red-600' : 'border-gray-200'}`}
@@ -1236,9 +1726,29 @@ export default function WordPuzzleGame() {
                     />
                   </div>
                 </div>
-                {/* Player's guesses - dots + list + Hint (just below text entry) */}
+                {/* Player's guesses — list icon (left), dots (center), Hint (right) */}
                 <div className="flex flex-col items-center">
                   <div className="flex justify-center items-center gap-2 sm:gap-3 w-full max-w-xs">
+                    <button
+                      ref={mobileGuessListBtnRef}
+                      type="button"
+                      title="Tap to view your guesses"
+                      onClick={() => {
+                        mobileGuessListSnapshotRef.current = validWords.slice(0, 5);
+                        updateGuessListPopupPosition();
+                        setShowMobileGuessList(true);
+                      }}
+                      className="flex-shrink-0 flex flex-col items-center justify-center gap-0.5 py-1 px-1.5 rounded-md text-gray-600 hover:bg-gray-50/80 hover:text-gray-800 active:bg-gray-100 active:text-gray-900 min-h-[2.75rem]"
+                      aria-label="Show guessed words — tap to expand"
+                    >
+                      <FontAwesomeIcon icon={faList} className="text-lg shrink-0" />
+                      <FontAwesomeIcon
+                        icon={faChevronDown}
+                        className="shrink-0 text-gray-500"
+                        style={{ width: 10, height: 10, display: 'block' }}
+                        aria-hidden
+                      />
+                    </button>
                     <div className="flex justify-center gap-2 sm:gap-3">
                       {[0, 1, 2, 3, 4].map((idx) => {
                         const entry = validWords[idx];
@@ -1261,17 +1771,6 @@ export default function WordPuzzleGame() {
                         );
                       })}
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        mobileGuessListSnapshotRef.current = validWords.slice(0, 5);
-                        setShowMobileGuessList(true);
-                      }}
-                      className="flex-shrink-0 p-1 flex items-center justify-center text-gray-600 hover:text-gray-800 active:text-gray-900"
-                      aria-label="Show guessed words"
-                    >
-                      <FontAwesomeIcon icon={faList} className="text-lg" />
-                    </button>
                     <button
                       type="button"
                       onClick={handleHint}
@@ -1314,17 +1813,52 @@ export default function WordPuzzleGame() {
                   </div>
                   {showMobileGuessList && createPortal(
                     <div
-                      className="fixed inset-0 z-[100]"
+                      className="fixed inset-0 z-[100] bg-black/25"
                       style={{ top: 0, left: 0, right: 0, bottom: 0 }}
-                      onClick={() => setShowMobileGuessList(false)}
+                      onClick={() => {
+                        setShowMobileGuessList(false);
+                        setGuessListPopupPosition(null);
+                      }}
                       aria-hidden
                     >
                       <div
-                        className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-white rounded-lg shadow-lg border border-gray-200 p-4 max-w-[90vw] max-h-[70vh] overflow-y-auto"
+                        className={`bg-white rounded-lg shadow-lg border border-gray-200 p-4 max-h-[70vh] overflow-y-auto ${guessListPopupPosition ? 'guess-popover-panel' : ''}`}
+                        style={
+                          guessListPopupPosition
+                            ? {
+                                position: 'fixed',
+                                top: guessListPopupPosition.top,
+                                left: guessListPopupPosition.left,
+                                width: guessListPopupPosition.width,
+                                maxWidth: 'calc(100vw - 20px)',
+                                transformOrigin: 'top left',
+                              }
+                            : {
+                                position: 'fixed',
+                                left: '50%',
+                                top: '50%',
+                                transform: 'translate(-50%, -50%)',
+                                width: 'min(320px, 90vw)',
+                                maxWidth: '90vw',
+                              }
+                        }
                         onClick={(e) => e.stopPropagation()}
                         onTouchStart={(e) => e.stopPropagation()}
                       >
-                        <div className="text-sm font-semibold text-gray-700 mb-2">Your Guesses</div>
+                        <div className="flex items-start justify-between gap-2 mb-2">
+                          <div className="text-sm font-semibold text-gray-700 pt-0.5 pr-2">Your Guesses</div>
+                          <button
+                            type="button"
+                            className="flex-shrink-0 -mr-1 -mt-1 p-1.5 rounded-md text-gray-500 hover:text-gray-800 hover:bg-gray-100 active:bg-gray-200"
+                            aria-label="Close guesses"
+                            onClick={() => {
+                              setShowMobileGuessList(false);
+                              setGuessListPopupPosition(null);
+                            }}
+                          >
+                            <FontAwesomeIcon icon={faXmark} className="text-lg" />
+                          </button>
+                        </div>
                         <div className="flex flex-col gap-2">
                           {(mobileGuessListSnapshotRef.current || []).map(({ word, length, isValid }, idx) => (
                             <div key={idx} className="rounded-lg px-3 py-2 flex items-center space-x-2" style={{
@@ -1372,87 +1906,314 @@ export default function WordPuzzleGame() {
         </div>
       )}
 
-      {/* Virtual Keyboard - only on mobile; always fixed at bottom of screen */}
-      {isMobile && roundStarted && !gameOver && !showRules && (
+      {/* Virtual Keyboard - only on mobile; fixed at bottom; scales to viewport with 8px edge margin (matches ver4) */}
+      {isMobile && roundStarted && !gameOver && !showRules && (() => {
+        // Use live viewport so keyboard size updates on resize / orientation / visualViewport changes
+        const vw = typeof window !== 'undefined' ? (window.visualViewport ? window.visualViewport.width : window.innerWidth) : viewportWidth;
+        const vh = typeof window !== 'undefined' ? (window.visualViewport ? window.visualViewport.height : window.innerHeight) : viewportHeight;
+        const edgeMargin = 8;
+        const originalKeyBaseWidth = 35;
+        const originalGapBase = 8;
+        const keyCountTopRow = 10;
+        const gapCountTopRow = keyCountTopRow - 1;
+        const originalDesignRowWidth = keyCountTopRow * originalKeyBaseWidth + gapCountTopRow * originalGapBase;
+        const keyBaseWidth = originalKeyBaseWidth + 3;
+        const keyBaseHeight = 45 + 3;
+        const gapBase = (originalDesignRowWidth - keyCountTopRow * keyBaseWidth) / gapCountTopRow;
+        const availableWidth = Math.max(0, vw - 2 * edgeMargin);
+        const designRowWidth = originalDesignRowWidth;
+        let scale = availableWidth / designRowWidth;
+        let gapPx = gapBase * scale;
+        const gapMax = 10;
+        const gapMin = 4;
+        if (gapPx > gapMax && keyCountTopRow * keyBaseWidth > 0) {
+          scale = (availableWidth - gapCountTopRow * gapMax) / (keyCountTopRow * keyBaseWidth);
+          gapPx = gapMax;
+        }
+        gapPx = Math.max(gapMin, Math.min(gapMax, Math.round(gapPx)));
+        const rowGapPx = Math.round(gapPx * 1.6);
+        const letterW = Math.round(keyBaseWidth * scale);
+        const keyPadding = 4;
+        const containerPaddingH = 8;
+        const containerPaddingB = 8;
+        const maxKeyboardHeight = typeof vh === 'number' && vh > 0 ? Math.min(vh * 0.4, 350) : 350;
+        const nonKeyVertical = 8 + containerPaddingB + 2 * rowGapPx;
+        const maxLetterHeightFromContainer = Math.floor((maxKeyboardHeight - nonKeyVertical) / 4);
+        const unconstrainedLetterH = Math.round(keyBaseHeight * scale);
+        const letterH = Math.max(30, Math.min(60, unconstrainedLetterH, maxLetterHeightFromContainer));
+        const bottomLettersCount = 7;
+        const bottomKeysTotalWidth = bottomLettersCount * letterW;
+        const bottomGapCount = bottomLettersCount + 2 - 1;
+        const bottomGapsTotalWidth = bottomGapCount * gapPx;
+        const specialWidth = Math.max(0, Math.round((availableWidth - bottomKeysTotalWidth - bottomGapsTotalWidth) / 2));
+        const submitWidth = bottomKeysTotalWidth + (bottomLettersCount - 1) * gapPx;
+        const specialHeight = letterH;
+        const popupScale = 1.2;
+        const popupW = Math.round(letterW * popupScale);
+        const popupH = Math.round(letterH * popupScale);
+        const popupGap = 4;
+        const keyBg = '#e5e7eb';
+        const findNearestIndexByCenters = (x, widths, gap) => {
+          let cursor = 0;
+          let bestIndex = 0;
+          let bestDist = Infinity;
+          for (let i = 0; i < widths.length; i++) {
+            const center = cursor + widths[i] / 2;
+            const dist = Math.abs(x - center);
+            if (dist < bestDist) { bestDist = dist; bestIndex = i; }
+            cursor += widths[i] + gap;
+          }
+          return bestIndex;
+        };
+        const handleTopRowBackgroundPointerDown = (event) => {
+          if (!roundStarted || gameOver) return;
+          if (event.target && event.target.closest && event.target.closest('button')) return;
+          const rect = event.currentTarget.getBoundingClientRect();
+          const x = event.clientX - rect.left;
+          const letters = ['Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P'];
+          const widths = new Array(letters.length).fill(letterW);
+          const idx = findNearestIndexByCenters(x, widths, gapPx);
+          const letter = letters[idx] || letters[0];
+          event.preventDefault();
+          event.stopPropagation();
+          setPressedKey(letter);
+          const useCapital = mobileShiftActiveRef.current;
+          handleKeyboardLetter(useCapital ? letter : letter.toLowerCase());
+          if (useCapital && !mobileCapsLockRef.current) {
+            mobileShiftActiveRef.current = false;
+            setMobileShiftActive(false);
+          }
+          refocusInputSoon();
+        };
+        const handleTopRowPointerUpOrCancel = () => { setPressedKey(null); };
+        const handleMiddleRowBackgroundPointerDown = (event) => {
+          if (!roundStarted || gameOver) return;
+          if (event.target && event.target.closest && event.target.closest('button')) return;
+          const rect = event.currentTarget.getBoundingClientRect();
+          const x = event.clientX - rect.left;
+          const letters = ['A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L'];
+          const widths = new Array(letters.length).fill(letterW);
+          const idx = findNearestIndexByCenters(x, widths, gapPx);
+          const letter = letters[idx] || letters[0];
+          event.preventDefault();
+          event.stopPropagation();
+          setPressedKey(letter);
+          const useCapital = mobileShiftActiveRef.current;
+          handleKeyboardLetter(useCapital ? letter : letter.toLowerCase());
+          if (useCapital && !mobileCapsLockRef.current) {
+            mobileShiftActiveRef.current = false;
+            setMobileShiftActive(false);
+          }
+          refocusInputSoon();
+        };
+        const handleMiddleRowPointerUpOrCancel = () => { setPressedKey(null); };
+        const handleBottomRowBackgroundPointerDown = (event) => {
+          if (!roundStarted || gameOver) return;
+          if (event.target && event.target.closest && event.target.closest('button')) return;
+          const rect = event.currentTarget.getBoundingClientRect();
+          const x = event.clientX - rect.left;
+          const keys = [
+            { type: 'shift' },
+            { type: 'letter', value: 'Z' }, { type: 'letter', value: 'X' }, { type: 'letter', value: 'C' },
+            { type: 'letter', value: 'V' }, { type: 'letter', value: 'B' }, { type: 'letter', value: 'N' }, { type: 'letter', value: 'M' },
+            { type: 'backspace' },
+          ];
+          const widths = [specialWidth, letterW, letterW, letterW, letterW, letterW, letterW, letterW, specialWidth];
+          const idx = findNearestIndexByCenters(x, widths, gapPx);
+          const key = keys[idx] || keys[0];
+          event.preventDefault();
+          event.stopPropagation();
+          if (key.type === 'letter') {
+            const letter = key.value;
+            setPressedKey(letter);
+            const useCapital = mobileShiftActiveRef.current;
+            handleKeyboardLetter(useCapital ? letter : letter.toLowerCase());
+            if (useCapital && !mobileCapsLockRef.current) {
+              mobileShiftActiveRef.current = false;
+              setMobileShiftActive(false);
+            }
+            refocusInputSoon();
+          } else if (key.type === 'shift') {
+            setPressedKey('shift');
+            const now = Date.now();
+            if (!mobileShiftActive) {
+              mobileShiftActiveRef.current = true;
+              mobileCapsLockRef.current = false;
+              setMobileShiftActive(true);
+              setMobileCapsLock(false);
+              mobileShiftOnAtRef.current = now;
+            } else if (mobileCapsLock) {
+              mobileShiftActiveRef.current = false;
+              mobileCapsLockRef.current = false;
+              setMobileShiftActive(false);
+              setMobileCapsLock(false);
+            } else {
+              if (now - mobileShiftOnAtRef.current < 450) {
+                mobileCapsLockRef.current = true;
+                setMobileCapsLock(true);
+              } else {
+                mobileShiftActiveRef.current = false;
+                setMobileShiftActive(false);
+              }
+            }
+            refocusInputSoon();
+          } else if (key.type === 'backspace') {
+            setPressedKey('backspace');
+            handleKeyboardBackspace();
+            refocusInputSoon();
+          }
+        };
+        const handleBottomRowPointerUpOrCancel = () => { setPressedKey(null); };
+        return (
         <>
           <div style={{ marginTop: 15, minHeight: 260 }} aria-hidden />
           <div
             className={isMobile ? "" : "mt-4"}
-            style={isMobile
-              ? { position: 'fixed', bottom: 10, left: 0, right: 0, padding: '0 23px', paddingBottom: 10, zIndex: 20 }
-              : { padding: '0 10px' }}
+            style={isMobile ? { position: 'fixed', bottom: 0, left: 0, right: 0, padding: `8px ${containerPaddingH}px ${containerPaddingB}px`, borderTop: '1px solid #e5e7eb', backgroundColor: '#ffffff', zIndex: 20 } : { padding: '0 10px' }}
           >
             {/* Top row: Q-P */}
-            <div className="flex gap-1 mb-1.5 justify-center relative" style={{ marginLeft: '-30px', marginRight: '-30px', paddingLeft: '30px', paddingRight: '30px' }}>
+            <div className="flex justify-center relative flex-nowrap" style={{ gap: gapPx, marginBottom: rowGapPx }} onPointerDown={handleTopRowBackgroundPointerDown} onPointerUp={handleTopRowPointerUpOrCancel} onPointerCancel={handleTopRowPointerUpOrCancel}>
               {['Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P'].map((letter) => (
-                <div key={letter} style={{ position: 'relative', flex: '0 0 calc((100% - 20px - 36px + 40px) / 10)' }}>
+                <div key={letter} style={{ position: 'relative', width: letterW, height: letterH, flexShrink: 0, overflow: 'visible' }}>
                   <button
                     type="button"
-                    onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); setPressedKey(letter); handleKeyboardLetter(letter.toLowerCase()); refocusInputSoon(); }}
+                    onPointerDown={(e) => {
+                      e.preventDefault(); e.stopPropagation();
+                      setPressedKey(letter);
+                      const useCapital = mobileShiftActiveRef.current;
+                      handleKeyboardLetter(useCapital ? letter : letter.toLowerCase());
+                      if (useCapital && !mobileCapsLockRef.current) { mobileShiftActiveRef.current = false; setMobileShiftActive(false); }
+                      refocusInputSoon();
+                    }}
                     onPointerUp={(e) => { e.preventDefault(); e.stopPropagation(); setPressedKey(null); }}
                     onPointerCancel={(e) => { e.preventDefault(); e.stopPropagation(); setPressedKey(null); }}
-                    className="bg-gray-200 hover:bg-gray-300 active:bg-gray-400 text-gray-800 font-semibold py-4 rounded text-base sm:text-lg transition-colors touch-manipulation"
-                    disabled={!roundStarted||gameOver}
-                    style={{ touchAction: 'manipulation', width: '100%', userSelect: 'none', WebkitUserSelect: 'none', WebkitTapHighlightColor: 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '54px', position: 'relative', zIndex: pressedKey === letter ? 10 : 2, transform: pressedKey === letter ? 'scale(1.3)' : 'scale(1)', transition: 'transform 0.1s ease-out' }}
+                    className="bg-gray-200 hover:bg-gray-300 text-gray-800 font-semibold rounded-lg text-base sm:text-lg transition-colors touch-manipulation"
+                    disabled={!roundStarted || gameOver}
+                    style={{ touchAction: 'manipulation', width: '100%', height: '100%', padding: keyPadding, boxSizing: 'border-box', userSelect: 'none', WebkitUserSelect: 'none', WebkitTapHighlightColor: 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: letterH, position: 'relative', zIndex: 2, pointerEvents: 'auto' }}
                   >
-                    {letter}
+                    {pressedKey === letter ? '' : letter}
                   </button>
+                  {pressedKey === letter && (
+                    <>
+                      <div style={{ position: 'absolute', left: 0, right: 0, bottom: '100%', height: popupGap, backgroundColor: keyBg, borderTopLeftRadius: 6, borderTopRightRadius: 6, zIndex: 10 }} />
+                      <div style={{ position: 'absolute', left: '50%', marginLeft: -popupW / 2, bottom: `calc(100% + ${popupGap}px)`, width: popupW, height: popupH, backgroundColor: keyBg, borderRadius: 8, boxShadow: '0 2px 6px rgba(0,0,0,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.2em', fontWeight: 600, color: '#1f2937', zIndex: 10, pointerEvents: 'none' }}>{letter}</div>
+                    </>
+                  )}
                 </div>
               ))}
             </div>
             {/* Middle row: A-L */}
-            <div className="flex gap-1 mb-1.5 justify-center relative" style={{ marginLeft: '-40px', marginRight: '-40px', paddingLeft: '40px', paddingRight: '40px' }}>
+            <div className="flex justify-center relative flex-nowrap" style={{ gap: gapPx, marginBottom: rowGapPx }} onPointerDown={handleMiddleRowBackgroundPointerDown} onPointerUp={handleMiddleRowPointerUpOrCancel} onPointerCancel={handleMiddleRowPointerUpOrCancel}>
               {['A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L'].map((letter) => (
-                <div key={letter} style={{ position: 'relative', flex: '0 0 calc((100% - 20px - 36px + 40px) / 10)' }}>
+                <div key={letter} style={{ position: 'relative', width: letterW, height: letterH, flexShrink: 0, overflow: 'visible' }}>
                   <button
                     type="button"
-                    onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); setPressedKey(letter); handleKeyboardLetter(letter.toLowerCase()); refocusInputSoon(); }}
+                    onPointerDown={(e) => {
+                      e.preventDefault(); e.stopPropagation();
+                      setPressedKey(letter);
+                      const useCapital = mobileShiftActiveRef.current;
+                      handleKeyboardLetter(useCapital ? letter : letter.toLowerCase());
+                      if (useCapital && !mobileCapsLockRef.current) { mobileShiftActiveRef.current = false; setMobileShiftActive(false); }
+                      refocusInputSoon();
+                    }}
                     onPointerUp={(e) => { e.preventDefault(); e.stopPropagation(); setPressedKey(null); }}
                     onPointerCancel={(e) => { e.preventDefault(); e.stopPropagation(); setPressedKey(null); }}
-                    className="bg-gray-200 hover:bg-gray-300 active:bg-gray-400 text-gray-800 font-semibold py-4 rounded text-base sm:text-lg transition-colors touch-manipulation"
-                    disabled={!roundStarted||gameOver}
-                    style={{ touchAction: 'manipulation', width: '100%', userSelect: 'none', WebkitUserSelect: 'none', WebkitTapHighlightColor: 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '54px', position: 'relative', zIndex: pressedKey === letter ? 10 : 2, transform: pressedKey === letter ? 'scale(1.3)' : 'scale(1)', transition: 'transform 0.1s ease-out' }}
+                    className="bg-gray-200 hover:bg-gray-300 text-gray-800 font-semibold rounded-lg text-base sm:text-lg transition-colors touch-manipulation"
+                    disabled={!roundStarted || gameOver}
+                    style={{ touchAction: 'manipulation', width: '100%', height: '100%', padding: keyPadding, boxSizing: 'border-box', userSelect: 'none', WebkitUserSelect: 'none', WebkitTapHighlightColor: 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: letterH, position: 'relative', zIndex: 2, pointerEvents: 'auto' }}
                   >
-                    {letter}
+                    {pressedKey === letter ? '' : letter}
                   </button>
+                  {pressedKey === letter && (
+                    <>
+                      <div style={{ position: 'absolute', left: 0, right: 0, bottom: '100%', height: popupGap, backgroundColor: keyBg, borderTopLeftRadius: 6, borderTopRightRadius: 6, zIndex: 10 }} />
+                      <div style={{ position: 'absolute', left: '50%', marginLeft: -popupW / 2, bottom: `calc(100% + ${popupGap}px)`, width: popupW, height: popupH, backgroundColor: keyBg, borderRadius: 8, boxShadow: '0 2px 6px rgba(0,0,0,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.2em', fontWeight: 600, color: '#1f2937', zIndex: 10, pointerEvents: 'none' }}>{letter}</div>
+                    </>
+                  )}
                 </div>
               ))}
             </div>
-            {/* Bottom row: Submit + Z-M + Backspace */}
-            <div className="flex gap-1 justify-center relative" style={{ marginLeft: '-30px', marginRight: '-30px', paddingLeft: '30px', paddingRight: '30px' }}>
-              <div style={{ position: 'relative', flex: '0 0 calc((100% - 20px - 36px + 40px) / 10 * 1.8)', width: 'calc((100% - 20px - 36px + 40px) / 10 * 1.8)', boxSizing: 'border-box' }}>
-                <button
-                  type="button"
-                  onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); setPressedKey('submit'); const val = (inputRef.current?.value ?? inputValueRef.current ?? input) ?? ''; handleSubmit(e, val); refocusInputSoon(); }}
-                  onPointerUp={(e) => { e.preventDefault(); e.stopPropagation(); setPressedKey(null); }}
-                  onPointerCancel={(e) => { e.preventDefault(); e.stopPropagation(); setPressedKey(null); }}
-                  className="text-white rounded text-xs font-semibold disabled:opacity-50 touch-manipulation"
-                  disabled={!roundStarted||gameOver}
-                  style={{ backgroundColor: '#195b7c', touchAction: 'manipulation', width: '100%', padding: '16px 14px', userSelect: 'none', WebkitUserSelect: 'none', WebkitTapHighlightColor: 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '54px', height: '54px', position: 'relative', zIndex: pressedKey === 'submit' ? 10 : 2, boxSizing: 'border-box', transform: pressedKey === 'submit' ? 'scale(1.3)' : 'scale(1)', transition: 'transform 0.1s ease-out' }}
-                >
-                  Submit
-                </button>
-              </div>
-              {['Z', 'X', 'C', 'V', 'B', 'N', 'M'].map((letter) => (
-                <div key={letter} style={{ position: 'relative', flex: '0 0 calc((100% - 20px - 36px + 40px) / 10)' }}>
-                  <button
-                    type="button"
-                    onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); setPressedKey(letter); handleKeyboardLetter(letter.toLowerCase()); refocusInputSoon(); }}
-                    onPointerUp={(e) => { e.preventDefault(); e.stopPropagation(); setPressedKey(null); }}
-                    onPointerCancel={(e) => { e.preventDefault(); e.stopPropagation(); setPressedKey(null); }}
-                    className="bg-gray-200 hover:bg-gray-300 active:bg-gray-400 text-gray-800 font-semibold py-4 rounded text-base sm:text-lg transition-colors touch-manipulation"
-                    disabled={!roundStarted||gameOver}
-                    style={{ touchAction: 'manipulation', width: '100%', userSelect: 'none', WebkitUserSelect: 'none', WebkitTapHighlightColor: 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '54px', position: 'relative', zIndex: pressedKey === letter ? 10 : 2, transform: pressedKey === letter ? 'scale(1.3)' : 'scale(1)', transition: 'transform 0.1s ease-out' }}
-                  >
-                    {letter}
-                  </button>
-                </div>
-              ))}
-              <div style={{ position: 'relative', flex: '0 0 calc((100% - 20px - 36px + 40px) / 10 * 1.8)', width: 'calc((100% - 20px - 36px + 40px) / 10 * 1.8)', boxSizing: 'border-box' }}>
+            {/* Bottom row: Shift + Z-M + Backspace */}
+            <div className="flex justify-center relative flex-nowrap" style={{ gap: gapPx, marginBottom: rowGapPx }} onPointerDown={handleBottomRowBackgroundPointerDown} onPointerUp={handleBottomRowPointerUpOrCancel} onPointerCancel={handleBottomRowPointerUpOrCancel}>
+              <div style={{ position: 'relative', width: specialWidth, height: specialHeight, flexShrink: 0 }}>
                 <button
                   type="button"
                   onPointerDown={(e) => {
-                    e.preventDefault(); e.stopPropagation(); setPressedKey('backspace'); handleKeyboardBackspace(); refocusInputSoon();
+                    e.preventDefault(); e.stopPropagation();
+                    setPressedKey('shift');
+                    const now = Date.now();
+                    if (!mobileShiftActive) {
+                      mobileShiftActiveRef.current = true;
+                      mobileCapsLockRef.current = false;
+                      setMobileShiftActive(true);
+                      setMobileCapsLock(false);
+                      mobileShiftOnAtRef.current = now;
+                    } else if (mobileCapsLock) {
+                      mobileShiftActiveRef.current = false;
+                      mobileCapsLockRef.current = false;
+                      setMobileShiftActive(false);
+                      setMobileCapsLock(false);
+                    } else {
+                      if (now - mobileShiftOnAtRef.current < 450) {
+                        mobileCapsLockRef.current = true;
+                        setMobileCapsLock(true);
+                      } else {
+                        mobileShiftActiveRef.current = false;
+                        setMobileShiftActive(false);
+                      }
+                    }
+                    refocusInputSoon();
+                  }}
+                  onPointerUp={(e) => { e.preventDefault(); e.stopPropagation(); setPressedKey(null); }}
+                  onPointerCancel={(e) => { e.preventDefault(); e.stopPropagation(); setPressedKey(null); }}
+                  className="bg-gray-200 hover:bg-gray-300 active:bg-gray-400 text-gray-800 font-semibold rounded-lg text-base disabled:opacity-50 touch-manipulation"
+                  disabled={!roundStarted || gameOver}
+                  style={{ touchAction: 'manipulation', width: '100%', height: '100%', padding: keyPadding, boxSizing: 'border-box', userSelect: 'none', WebkitUserSelect: 'none', WebkitTapHighlightColor: 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: specialHeight, height: specialHeight, position: 'relative', zIndex: pressedKey === 'shift' ? 10 : 2, transform: pressedKey === 'shift' ? 'scale(1.3)' : 'scale(1)', transition: 'transform 0.1s ease-out', backgroundColor: pressedKey === 'shift' ? 'rgb(156, 163, 175)' : mobileShiftActive ? 'rgb(156, 163, 175)' : undefined }}
+                  title={mobileCapsLock ? 'Caps lock on (tap to turn off)' : mobileShiftActive ? 'Next letter capital (double-tap for caps lock)' : 'Tap for one capital letter; double-tap for caps lock'}
+                  aria-label={mobileCapsLock ? 'Caps lock on' : mobileShiftActive ? 'Next letter will be capital' : 'Shift'}
+                >
+                  <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0 }}>
+                    <span>⇧</span>
+                    {mobileCapsLock && <span style={{ width: '1em', borderBottom: '2px solid currentColor', marginTop: '-1px' }} aria-hidden />}
+                  </span>
+                </button>
+              </div>
+              {['Z', 'X', 'C', 'V', 'B', 'N', 'M'].map((letter) => (
+                <div key={letter} style={{ position: 'relative', width: letterW, height: letterH, flexShrink: 0, overflow: 'visible' }}>
+                  <button
+                    type="button"
+                    onPointerDown={(e) => {
+                      e.preventDefault(); e.stopPropagation();
+                      setPressedKey(letter);
+                      const useCapital = mobileShiftActiveRef.current;
+                      handleKeyboardLetter(useCapital ? letter : letter.toLowerCase());
+                      if (useCapital && !mobileCapsLockRef.current) { mobileShiftActiveRef.current = false; setMobileShiftActive(false); }
+                      refocusInputSoon();
+                    }}
+                    onPointerUp={(e) => { e.preventDefault(); e.stopPropagation(); setPressedKey(null); }}
+                    onPointerCancel={(e) => { e.preventDefault(); e.stopPropagation(); setPressedKey(null); }}
+                    className="bg-gray-200 hover:bg-gray-300 text-gray-800 font-semibold rounded-lg text-base sm:text-lg transition-colors touch-manipulation"
+                    disabled={!roundStarted || gameOver}
+                    style={{ touchAction: 'manipulation', width: '100%', height: '100%', padding: keyPadding, boxSizing: 'border-box', userSelect: 'none', WebkitUserSelect: 'none', WebkitTapHighlightColor: 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: letterH, position: 'relative', zIndex: 2, pointerEvents: 'auto' }}
+                  >
+                    {pressedKey === letter ? '' : letter}
+                  </button>
+                  {pressedKey === letter && (
+                    <>
+                      <div style={{ position: 'absolute', left: 0, right: 0, bottom: '100%', height: popupGap, backgroundColor: keyBg, borderTopLeftRadius: 6, borderTopRightRadius: 6, zIndex: 10 }} />
+                      <div style={{ position: 'absolute', left: '50%', marginLeft: -popupW / 2, bottom: `calc(100% + ${popupGap}px)`, width: popupW, height: popupH, backgroundColor: keyBg, borderRadius: 8, boxShadow: '0 2px 6px rgba(0,0,0,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.2em', fontWeight: 600, color: '#1f2937', zIndex: 10, pointerEvents: 'none' }}>{letter}</div>
+                    </>
+                  )}
+                </div>
+              ))}
+              <div style={{ position: 'relative', width: specialWidth, height: specialHeight, flexShrink: 0 }}>
+                <button
+                  type="button"
+                  onPointerDown={(e) => {
+                    e.preventDefault(); e.stopPropagation();
+                    setPressedKey('backspace');
+                    handleKeyboardBackspace();
+                    refocusInputSoon();
                     backspaceHoldTimeoutRef.current = setTimeout(() => {
                       backspaceHoldIntervalRef.current = setInterval(() => handleKeyboardBackspace(), 50);
                     }, 300);
@@ -1467,20 +2228,105 @@ export default function WordPuzzleGame() {
                     if (backspaceHoldTimeoutRef.current) { clearTimeout(backspaceHoldTimeoutRef.current); backspaceHoldTimeoutRef.current = null; }
                     if (backspaceHoldIntervalRef.current) { clearInterval(backspaceHoldIntervalRef.current); backspaceHoldIntervalRef.current = null; }
                   }}
-                  className="bg-gray-200 hover:bg-gray-300 active:bg-gray-400 text-gray-800 font-semibold rounded text-base disabled:opacity-50 touch-manipulation"
-                  disabled={!roundStarted||gameOver}
-                  style={{ touchAction: 'manipulation', width: '100%', padding: '16px 14px', userSelect: 'none', WebkitUserSelect: 'none', WebkitTapHighlightColor: 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '54px', height: '54px', position: 'relative', zIndex: pressedKey === 'backspace' ? 10 : 2, boxSizing: 'border-box', transform: pressedKey === 'backspace' ? 'scale(1.3)' : 'scale(1)', transition: 'transform 0.1s ease-out' }}
+                  className="bg-gray-200 hover:bg-gray-300 active:bg-gray-400 text-gray-800 font-semibold rounded-lg text-base disabled:opacity-50 touch-manipulation"
+                  disabled={!roundStarted || gameOver}
+                  style={{ touchAction: 'manipulation', width: '100%', height: '100%', padding: keyPadding, boxSizing: 'border-box', userSelect: 'none', WebkitUserSelect: 'none', WebkitTapHighlightColor: 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: specialHeight, height: specialHeight, position: 'relative', zIndex: pressedKey === 'backspace' ? 10 : 2, transform: pressedKey === 'backspace' ? 'scale(1.3)' : 'scale(1)', transition: 'transform 0.1s ease-out', backgroundColor: pressedKey === 'backspace' ? 'rgb(156, 163, 175)' : undefined }}
                 >
                   ⌫
                 </button>
               </div>
             </div>
+            {/* Submit: span from Z to M, same height as keys; only clickable within button */}
+            <div className="w-full mt-0.5 flex justify-center">
+              <button
+                type="button"
+                onPointerDown={(e) => {
+                  e.preventDefault(); e.stopPropagation();
+                  setPressedKey('submit');
+                  mobileShiftActiveRef.current = false;
+                  mobileCapsLockRef.current = false;
+                  setMobileShiftActive(false);
+                  setMobileCapsLock(false);
+                  const val = (inputRef.current?.value ?? inputValueRef.current ?? input) ?? '';
+                  handleSubmit(e, val);
+                  refocusInputSoon();
+                }}
+                onPointerUp={(e) => { e.preventDefault(); e.stopPropagation(); setPressedKey(null); }}
+                onPointerCancel={(e) => { e.preventDefault(); e.stopPropagation(); setPressedKey(null); }}
+                className="text-white rounded-lg text-base font-semibold disabled:opacity-50 touch-manipulation"
+                disabled={!roundStarted || gameOver}
+                style={{ backgroundColor: '#195b7c', touchAction: 'manipulation', userSelect: 'none', WebkitUserSelect: 'none', WebkitTapHighlightColor: 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative', zIndex: pressedKey === 'submit' ? 10 : 2, transform: pressedKey === 'submit' ? 'scale(1.02)' : 'scale(1)', transition: 'transform 0.1s ease-out', width: submitWidth, height: letterH, minHeight: letterH }}
+              >
+                Submit
+              </button>
+            </div>
           </div>
         </>
-      )}
+        );
+      })()}
 
       {roundStarted && gameOver && (
         <>
+          <div className={`mb-4 ${showRevealAnimation ? 'reveal-content' : ''}`}>
+            <div className="flex justify-center space-x-3 items-center">
+              {letters.split('').map((char, idx) => {
+                const { shape, color } = shapes[idx];
+                const common = {
+                  width: `${size}px`,
+                  height: `${size}px`,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: 'white',
+                  fontSize: '1.95rem',
+                  fontWeight: '600',
+                  boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
+                  transition: 'all 0.2s ease-in-out'
+                };
+                const style = shape === 'circle' ? {
+                  ...common,
+                  backgroundColor: color,
+                  borderRadius: '50%',
+                  boxShadow: '0 4px 16px rgba(0, 0, 0, 0.2)'
+                } : shape === 'diamond' ? {
+                  ...common,
+                  backgroundColor: color,
+                  borderRadius: '12px',
+                  transform: 'rotate(45deg) scale(0.85)',
+                  boxShadow: '0 4px 16px rgba(0, 0, 0, 0.2)'
+                } : {
+                  ...common,
+                  backgroundColor: color,
+                  borderRadius: '12px',
+                  boxShadow: '0 4px 16px rgba(0, 0, 0, 0.2)'
+                };
+                return (
+                  <div key={idx} style={style} className="hover:scale-105 transition-transform duration-200 relative">
+                    {shape === 'diamond' ? (
+                      <span style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        width: '100%',
+                        height: '100%',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: '1.75rem',
+                        fontWeight: 600,
+                        color: 'white',
+                        transform: 'rotate(-45deg) scale(1.176)',
+                      }}>
+                        {char}
+                      </span>
+                    ) : (
+                      <span>{char}</span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
           <div className={`mt-4 ${showRevealAnimation ? 'reveal-content' : ''}`}>
             <div className="relative inline-block font-bold text-center">
               <div className="text-2xl">
@@ -1496,10 +2342,16 @@ export default function WordPuzzleGame() {
                     backgroundColor: isValid ? 'rgba(28, 109, 42, 0.15)' : 'rgba(200, 95, 49, 0.15)',
                     border: isValid ? '1px solid rgba(28, 109, 42, 0.3)' : '1px solid rgba(200, 95, 49, 0.3)'
                   }}>
-                    <span className="font-medium text-sm" style={{color: isValid ? '#1c6d2a' : '#c85f31'}}>
+                    <span className="font-medium" style={{
+                      color: isValid ? '#1c6d2a' : '#c85f31',
+                      fontSize: 'calc(0.875rem * 0.7 + 6pt * 0.7)'
+                    }}>
                       {word === 'unused' ? 'No guess' : (word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())}
                     </span>
-                    <span className="text-xs" style={{color: isValid ? '#1c6d2a' : '#c85f31'}}>
+                    <span style={{
+                      color: isValid ? '#1c6d2a' : '#c85f31',
+                      fontSize: 'calc(0.75rem * 0.7 + 6pt * 0.7)'
+                    }}>
                       {word === 'unused' ? '(0)' : `(${length})`}
                     </span>
                   </div>
@@ -1507,15 +2359,34 @@ export default function WordPuzzleGame() {
               </div>
             </div>
           </div>
-          {/* Possible Answers from CSV (columns C-L), with hint word included if used */}
-          <div className={`text-center ${showRevealAnimation ? 'reveal-content' : ''}`}>
-            <div className="text-xs text-gray-500">
-              <div className="font-medium mb-1">Possible Answers:</div>
-              <PossibleAnswersFromCsv letters={letters} max={5} ensureIncluded={hintWord} />
-            </div>
+          {/* Possible answers — collapsed by default (matches my-app-ver4); lengths shown per answer */}
+          <div className={`w-full min-w-0 max-w-md mx-auto text-left ${showRevealAnimation ? 'reveal-content' : ''}`}>
+            <details className="group rounded-md border border-gray-200/80 px-3 py-2.5 open:border-gray-200/90 open:bg-white/50 transition-colors">
+              <summary
+                className="flex cursor-pointer list-none items-center justify-between gap-2 text-left [&::-webkit-details-marker]:hidden"
+                style={{ fontSize: 'calc(0.875rem * 0.576 + 6pt * 0.576)' }}
+              >
+                <span className="font-medium text-gray-500">Possible answers</span>
+                <FontAwesomeIcon
+                  icon={faChevronDown}
+                  className="text-gray-400 text-[10px] shrink-0 transition-transform duration-200 group-open:rotate-180"
+                  aria-hidden
+                />
+              </summary>
+              <div className="mt-2.5 border-t border-gray-100/90 pt-2.5">
+                <PossibleAnswersFromCsv letters={letters} max={5} ensureIncluded={hintWord} className="justify-start" />
+              </div>
+            </details>
           </div>
           <div className={`flex flex-col items-center space-y-3 ${showRevealAnimation ? 'reveal-content' : ''}`}>
-            <button onClick={resetGame} className="bg-white border border-gray-400 text-black w-52 h-16 text-xl font-semibold rounded">NEW GAME</button>
+            <button
+              type="button"
+              onClick={resetGame}
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-sm font-semibold rounded border border-gray-400 bg-white text-black"
+            >
+              <FontAwesomeIcon icon={faHouseChimney} className="text-base shrink-0" />
+              Home
+            </button>
           </div>
         </>
       )}
@@ -1527,18 +2398,30 @@ export default function WordPuzzleGame() {
                           {/* Header */}
               <div className="flex justify-between items-center mb-2">
                 <h2 className="text-lg font-bold flex items-center gap-2">
-                  <FontAwesomeIcon icon={faChartSimple} className="text-gray-600" />
+                  <button
+                    type="button"
+                    onClick={() => setShowClearStatsButton((v) => !v)}
+                    className="border-0 bg-transparent p-0.5 -m-0.5 text-gray-600 cursor-default outline-none focus:outline-none focus-visible:outline-none active:outline-none focus:ring-0 ring-0 [-webkit-tap-highlight-color:transparent]"
+                    aria-label="Toggle Clear Stats visibility (testing)"
+                  >
+                    <FontAwesomeIcon icon={faChartSimple} className="text-lg" />
+                  </button>
                   Statistics
                 </h2>
                 <div className="flex items-center space-x-2">
+                  {showClearStatsButton && (
+                    <button
+                      type="button"
+                      onClick={clearStats}
+                      className="text-xs text-red-500 hover:text-red-700 px-2 py-1 border border-red-300 rounded"
+                    >
+                      Clear Stats
+                    </button>
+                  )}
                   <button 
-                    onClick={clearStats}
-                    className="text-xs text-red-500 hover:text-red-700 px-2 py-1 border border-red-300 rounded"
-                  >
-                    Clear Stats
-                  </button>
-                  <button 
+                    type="button"
                     onClick={() => {
+                      setShowClearStatsButton(false);
                       setStatsModalClosing(true);
                       setShowStats(false);
                       setTimeout(() => setStatsModalClosing(false), 200);
@@ -1550,38 +2433,50 @@ export default function WordPuzzleGame() {
               </div>
             </div>
             
-            {/* Game Result Message */}
-            {(() => {
-              const raw = localStorage.getItem('currentRoundMistakes_v2_5guess');
-              const currentRoundMistakes = raw != null ? parseInt(raw, 10) : 5;
-              const correctCount = Math.min(5, Math.max(0, 5 - currentRoundMistakes));
-              let message = null;
-              let className = 'text-lg font-semibold';
-              if (correctCount === 0) {
-                message = 'Better Luck Next Time!';
-                className += ' text-gray-600';
-              } else if (correctCount <= 2) {
-                message = 'Nicely Done!';
-                className += ' text-green-700';
-              } else if (correctCount <= 4) {
-                message = 'Great Job!';
-                className += ' text-green-700';
-              } else {
-                message = 'Perfect!';
-                className += ' text-green-700';
-              }
-              return (
-                <div className="text-center mb-4 p-4 bg-gray-50 rounded-lg">
-                  <div className={className}>{message}</div>
-                </div>
-              );
-            })()}
+            {/* Game Result Message — only after a finished round / game-over screen (not home or mid-game stats) */}
+            {statsShowGameResultBanner &&
+              (() => {
+                const raw = localStorage.getItem('currentRoundMistakes_v2_5guess');
+                const currentRoundMistakes = raw != null ? parseInt(raw, 10) : 5;
+                const correctCount = Math.min(5, Math.max(0, 5 - currentRoundMistakes));
+                let message = null;
+                let leftEmoji = '';
+                let rightEmoji = '';
+                let className = 'text-lg font-semibold';
+                if (correctCount === 0) {
+                  message = 'Better Luck Next Time!';
+                  leftEmoji = rightEmoji = '☘️';
+                  className += ' text-gray-600';
+                } else if (correctCount <= 2) {
+                  message = 'Nicely Done!';
+                  leftEmoji = rightEmoji = '😊';
+                  className += ' text-green-700';
+                } else if (correctCount <= 4) {
+                  message = 'Great Job!';
+                  leftEmoji = rightEmoji = '🤩';
+                  className += ' text-green-700';
+                } else {
+                  message = 'Perfect!';
+                  leftEmoji = '🥳';
+                  rightEmoji = '🎉';
+                  className += ' text-green-700';
+                }
+                return (
+                  <div className="text-center mb-4 p-4 bg-gray-50 rounded-lg">
+                    <div className={`flex flex-wrap justify-center items-center gap-2 ${className}`}>
+                      <span className="text-xl leading-none" aria-hidden>{leftEmoji}</span>
+                      <span>{message}</span>
+                      <span className="text-xl leading-none" aria-hidden>{rightEmoji}</span>
+                    </div>
+                  </div>
+                );
+              })()}
             
             {/* Stats Grid */}
             <div className="grid grid-cols-4 gap-2 mb-3">
               <div className="text-center">
                 <div className="text-xl sm:text-2xl font-bold">{stats.gamesPlayed}</div>
-                <div className="text-xs text-gray-600">Played</div>
+                <div className="text-xs text-gray-600">Games Played</div>
               </div>
               <div className="text-center">
                 <div className="text-xl sm:text-2xl font-bold">
@@ -1601,7 +2496,10 @@ export default function WordPuzzleGame() {
             
             {/* High Scores */}
             <div className="mb-3">
-              <h3 className="text-sm font-semibold mb-1">High Scores</h3>
+              <h3 className="text-sm font-semibold mb-1 flex justify-center items-center gap-1.5">
+                <span className="text-base leading-none" aria-hidden>🏆</span>
+                High Scores
+              </h3>
               <div className="space-y-2">
                 {[1, 2, 3, 4, 5].map((position) => {
                   const score = (stats.highestScores && stats.highestScores[position - 1]) || 0;
@@ -1636,7 +2534,10 @@ export default function WordPuzzleGame() {
             <div className="grid grid-cols-2 gap-4 mb-3">
               {/* Correct Answers (5–0: games with 5 correct down to 0 correct) */}
               <div>
-                <h3 className="text-sm font-semibold mb-1 text-left">Correct Answers</h3>
+                <h3 className="text-sm font-semibold mb-1 text-left flex items-center gap-1.5">
+                  <span className="text-base leading-none" aria-hidden>🧠</span>
+                  Correct Answers
+                </h3>
                 <div className="space-y-0.5">
                   {[5, 4, 3, 2, 1, 0].map((correctCount) => {
                     const mistakeCount = 5 - correctCount;
@@ -1672,7 +2573,10 @@ export default function WordPuzzleGame() {
               
               {/* Longest Words */}
               <div>
-                <h3 className="text-sm font-semibold mb-1 text-left">Longest Words</h3>
+                <h3 className="text-sm font-semibold mb-1 text-left flex items-center gap-1.5">
+                  <span className="text-base leading-none" aria-hidden>📖</span>
+                  Longest Words
+                </h3>
                 <div className="space-y-0.5">
                   {[1, 2, 3, 4, 5].map((position) => {
                     const longestWord = (stats.longestWords && stats.longestWords[position - 1]);
@@ -1733,101 +2637,194 @@ export default function WordPuzzleGame() {
         </div>
       )}
 
-      {/* Rules Modal */}
+      {/* Rules Modal — 4-step wizard */}
       {(showRules || rulesModalClosing) && (
         <div className={`fixed top-0 left-0 right-0 bottom-0 bg-black bg-opacity-50 flex items-center justify-center z-[9999] ${rulesModalClosing ? 'modal-fade-out' : 'modal-fade-in'}`} style={{ width: '100vw', height: '100vh', margin: 0, padding: 0 }}>
-          <div className="bg-white rounded-lg w-full max-w-xs sm:max-w-sm md:max-w-md mx-4 sm:mx-6 flex flex-col max-h-[90vh] overflow-hidden">
-            {/* Header - sticky at top */}
-            <div className="flex justify-between items-center flex-shrink-0 p-4 sm:p-6 pb-2 border-b border-gray-200">
-              <h2 className="text-lg font-bold text-left flex items-center gap-2">
+          <div className="bg-white rounded-lg w-full max-w-xs sm:max-w-sm md:max-w-md mx-4 sm:mx-6 flex flex-col max-h-[min(90vh,90dvh)] overflow-hidden shadow-xl">
+            {/* Sticky header — close (×) on final step only */}
+            <div className="flex items-center justify-between flex-shrink-0 p-4 sm:p-6 pb-3 border-b border-gray-200 bg-white z-10 gap-2">
+              <h2 className="text-lg font-bold text-left flex items-center gap-2 flex-1 min-w-0">
                 <FontAwesomeIcon icon={faCircleQuestion} className="text-gray-600" />
-                Rules
+                How to Play
               </h2>
-              <button 
-                onClick={() => {
-                  rulesDismissedOnceRef.current = true;
-                  setRulesModalClosing(true);
-                  setShowRules(false);
-                  setTimeout(() => {
-                    setRulesModalClosing(false);
-                    setTimeout(() => setRevealAnimationPlayedThisRound(true), 500);
-                    setTimeout(() => inputRef.current?.focus(), 100);
-                  }, 200);
-                }}
-                className="text-gray-500 hover:text-gray-700 text-lg sm:text-xl font-bold"
+              {rulesWizardStep === 3 && (
+                <button
+                  type="button"
+                  onClick={closeRulesModal}
+                  className="flex-shrink-0 text-gray-500 hover:text-gray-700 text-lg sm:text-xl font-bold p-1 -mr-1 -mt-1"
+                  aria-label="Close"
+                >
+                  ×
+                </button>
+              )}
+            </div>
+            {/* Scrollable step body — swipe left/right on mobile to change steps */}
+            <div
+              className="flex-1 min-h-0 overflow-y-auto text-left touch-pan-y"
+              style={{ touchAction: isMobile ? 'pan-y' : undefined }}
+              onTouchStart={handleRulesWizardTouchStart}
+              onTouchEnd={handleRulesWizardTouchEnd}
+            >
+              <div
+                key={rulesWizardStep}
+                className={`px-4 sm:px-6 py-4 rules-wizard-slide-${rulesWizardSlideDir}`}
               >
-                ×
-              </button>
-            </div>
-            {/* Scrollable body */}
-            <div className="flex-1 min-h-0 overflow-y-auto text-left px-4 sm:px-6 py-2">
-            <div className="mb-4 text-base font-medium">Use the provided letters to create words.</div>
-            <ul className="mb-3 text-xs list-disc pl-5 space-y-1">
-              <li>Provided letters must be used in the order they appear.</li>
-              <li>There can be letters before, after and between the provided letters, as long as they remain in order.</li>
-              <li>Incorrect words will cost you a guess, and proper nouns/names are not considered valid words.</li>
-              <li>Guess at least 1 word to win, and get +1 point per letter in each valid word!</li>
-            </ul>
-            <div className="mb-1 mt-2 text-base font-semibold">Example</div>
-            <div className="mb-1 text-xs font-medium">Provided Letters:</div>
-            {/* LIN example, small */}
-            <div className="flex space-x-1 mb-2" style={{ transform: 'scale(0.7)', transformOrigin: 'left' }}>
-              <div style={{ width: 36, height: 36, background: '#c85f31', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '1.25rem', boxShadow: '0 2px 6px rgba(0,0,0,0.12)' }}>L</div>
-              <div style={{ width: 36, height: 36, background: '#195b7c', borderRadius: 8, transform: 'rotate(45deg) scale(0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '1.25rem', boxShadow: '0 2px 6px rgba(0,0,0,0.12)' }}>
-                <span style={{ transform: 'rotate(-45deg) scale(1.176)', display: 'inline-block', width: '100%', textAlign: 'center' }}>I</span>
+              {rulesWizardStep === 0 && (
+                <div>
+                  <p className="text-center text-base font-medium text-gray-800 leading-snug mb-4">
+                    Create words using 3 provided letters:
+                  </p>
+                  <RulesWizardLinShapes />
+                </div>
+              )}
+              {rulesWizardStep === 1 && (
+                <div>
+                  <RulesWizardLinShapes />
+                  <ul className="list-none space-y-2 pl-0 text-sm text-gray-800 leading-relaxed">
+                    <li className="flex gap-2 items-start">
+                      <span className="flex-shrink-0 select-none leading-snug" aria-hidden>💯</span>
+                      <span>Use all provided letters</span>
+                    </li>
+                    <li className="flex gap-2 items-start">
+                      <span className="flex-shrink-0 select-none leading-snug" aria-hidden>🔤</span>
+                      <span>Keep them in the same order shown</span>
+                    </li>
+                    <li className="flex gap-2 items-start">
+                      <span className="flex-shrink-0 select-none leading-snug" aria-hidden>🤹</span>
+                      <span>You can add extra letters before, after, or between them</span>
+                    </li>
+                  </ul>
+                </div>
+              )}
+              {rulesWizardStep === 2 && (
+                <div>
+                  <RulesWizardLinShapes />
+                  <div className="mb-1 text-xs font-medium text-gray-600">Example guesses</div>
+                  {/* PLACING */}
+                  <div className="flex flex-wrap items-center gap-x-1 gap-y-1 mb-1">
+                    <span>P</span>
+                    <div style={{ width: 24, height: 24, background: '#c85f31', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '0.95rem', boxShadow: '0 1px 3px rgba(0,0,0,0.10)' }}>L</div>
+                    <span>A</span>
+                    <span>C</span>
+                    <div style={{ width: 24, height: 24, background: '#195b7c', borderRadius: 6, transform: 'rotate(45deg) scale(0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '0.95rem', boxShadow: '0 1px 3px rgba(0,0,0,0.10)' }}>
+                      <span style={{ transform: 'rotate(-45deg) scale(1.176)', display: 'inline-block', width: '100%', textAlign: 'center' }}>I</span>
+                    </div>
+                    <div style={{ width: 24, height: 24, background: '#1c6d2a', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '0.95rem', boxShadow: '0 1px 3px rgba(0,0,0,0.10)' }}>N</div>
+                    <span>G</span>
+                  </div>
+                  <div className="flex items-start mb-3 text-xs" style={{ color: '#1c6d2a' }}>
+                    <FontAwesomeIcon icon={faCheckCircle} className="mr-1 mt-0.5 flex-shrink-0" /> Valid guess—letters between provided letters
+                  </div>
+                  {/* LINKS */}
+                  <div className="flex flex-wrap items-center gap-x-1 gap-y-1 mb-1">
+                    <div style={{ width: 24, height: 24, background: '#c85f31', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '0.95rem', boxShadow: '0 1px 3px rgba(0,0,0,0.10)' }}>L</div>
+                    <div style={{ width: 24, height: 24, background: '#195b7c', borderRadius: 6, transform: 'rotate(45deg) scale(0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '0.95rem', boxShadow: '0 1px 3px rgba(0,0,0,0.10)' }}>
+                      <span style={{ transform: 'rotate(-45deg) scale(1.176)', display: 'inline-block', width: '100%', textAlign: 'center' }}>I</span>
+                    </div>
+                    <div style={{ width: 24, height: 24, background: '#1c6d2a', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '0.95rem', boxShadow: '0 1px 3px rgba(0,0,0,0.10)' }}>N</div>
+                    <span>K</span>
+                    <span>S</span>
+                  </div>
+                  <div className="flex items-start mb-3 text-xs" style={{ color: '#1c6d2a' }}>
+                    <FontAwesomeIcon icon={faCheckCircle} className="mr-1 mt-0.5 flex-shrink-0" /> Valid guess—consecutive provided letters
+                  </div>
+                  {/* NAILS invalid */}
+                  <div className="flex flex-wrap items-center gap-x-1 gap-y-1 mb-1">
+                    <div style={{ width: 24, height: 24, background: '#1c6d2a', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '0.95rem', boxShadow: '0 1px 3px rgba(0,0,0,0.10)' }}>N</div>
+                    <span>A</span>
+                    <div style={{ width: 24, height: 24, background: '#195b7c', borderRadius: 6, transform: 'rotate(45deg) scale(0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '0.95rem', boxShadow: '0 1px 3px rgba(0,0,0,0.10)' }}>
+                      <span style={{ transform: 'rotate(-45deg) scale(1.176)', display: 'inline-block', width: '100%', textAlign: 'center' }}>I</span>
+                    </div>
+                    <div style={{ width: 24, height: 24, background: '#c85f31', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '0.95rem', boxShadow: '0 1px 3px rgba(0,0,0,0.10)' }}>L</div>
+                    <span>S</span>
+                  </div>
+                  <div className="flex items-start text-xs" style={{ color: '#992108' }}>
+                    <FontAwesomeIcon icon={faTimesCircle} className="mr-1 mt-0.5 flex-shrink-0" /> Invalid guess—provided letters not in order
+                  </div>
+                </div>
+              )}
+              {rulesWizardStep === 3 && (
+                <ul className="list-none space-y-4 pl-0 text-base text-gray-800 leading-relaxed">
+                  <li className="flex gap-2 items-start">
+                    <span className="flex-shrink-0 select-none leading-snug" aria-hidden>🔮</span>
+                    <span>5 guesses per game</span>
+                  </li>
+                  <li className="flex gap-2 items-start">
+                    <span className="flex-shrink-0 select-none leading-snug" aria-hidden>🔥</span>
+                    <span>+1 point per letter</span>
+                  </li>
+                  <li className="flex gap-2 items-start">
+                    <span className="flex-shrink-0 select-none leading-snug" aria-hidden>🤬</span>
+                    <span>Proper nouns and cuss words do not count</span>
+                  </li>
+                  <li className="flex gap-2 items-start">
+                    <span className="flex-shrink-0 select-none leading-snug" aria-hidden>🎉</span>
+                    <span className="font-medium">Guess at least 1 valid word to win!</span>
+                  </li>
+                </ul>
+              )}
               </div>
-              <div style={{ width: 36, height: 36, background: '#1c6d2a', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '1.25rem', boxShadow: '0 2px 6px rgba(0,0,0,0.12)' }}>N</div>
             </div>
-            <div className="mb-1 text-xs font-medium">Possible Answers:</div>
-            {/* PLAIN example */}
-            <div className="flex items-center space-x-1 mb-1">
-              <span>P</span>
-              <div style={{ width: 24, height: 24, background: '#c85f31', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '0.95rem', boxShadow: '0 1px 3px rgba(0,0,0,0.10)' }}>L</div>
-              <span>A</span>
-              <div style={{ width: 24, height: 24, background: '#195b7c', borderRadius: 6, transform: 'rotate(45deg) scale(0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '0.95rem', boxShadow: '0 1px 3px rgba(0,0,0,0.10)' }}>
-                <span style={{ transform: 'rotate(-45deg) scale(1.176)', display: 'inline-block', width: '100%', textAlign: 'center' }}>I</span>
+            {/* Progress dots + step actions */}
+            <div className="flex-shrink-0 border-t border-gray-200 bg-white">
+              <div className="flex justify-center items-center gap-2 py-3 px-4" role="tablist" aria-label="How to play steps">
+                {[0, 1, 2, 3].map((i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    role="tab"
+                    aria-selected={rulesWizardStep === i}
+                    aria-label={`Step ${i + 1} of 4`}
+                    onClick={() => setRulesWizardStep(i)}
+                    className={`rounded-full transition-all focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-gray-400 ${
+                      rulesWizardStep === i ? 'w-2.5 h-2.5 bg-gray-800' : 'w-2 h-2 bg-gray-300 hover:bg-gray-400'
+                    }`}
+                  />
+                ))}
               </div>
-              <div style={{ width: 24, height: 24, background: '#1c6d2a', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '0.95rem', boxShadow: '0 1px 3px rgba(0,0,0,0.10)' }}>N</div>
-            </div>
-            <div className="flex items-center mb-3 text-xs" style={{ color: '#1c6d2a' }}>
-              <FontAwesomeIcon icon={faCheckCircle} className="mr-1" /> Valid word—nonconsecutive provided letters.
-            </div>
-            {/* LINK example */}
-            <div className="flex items-center space-x-1 mb-1">
-              <div style={{ width: 24, height: 24, background: '#c85f31', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '0.95rem', boxShadow: '0 1px 3px rgba(0,0,0,0.10)' }}>L</div>
-              <div style={{ width: 24, height: 24, background: '#195b7c', borderRadius: 6, transform: 'rotate(45deg) scale(0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '0.95rem', boxShadow: '0 1px 3px rgba(0,0,0,0.10)' }}>
-                <span style={{ transform: 'rotate(-45deg) scale(1.176)', display: 'inline-block', width: '100%', textAlign: 'center' }}>I</span>
-              </div>
-              <div style={{ width: 24, height: 24, background: '#1c6d2a', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '0.95rem', boxShadow: '0 1px 3px rgba(0,0,0,0.10)' }}>N</div>
-              <span>K</span>
-            </div>
-            <div className="flex items-center mb-3 text-xs" style={{ color: '#1c6d2a' }}>
-              <FontAwesomeIcon icon={faCheckCircle} className="mr-1" /> Valid word—consecutive provided letters.
-            </div>
-            {/* NAIL (invalid) example */}
-            <div className="flex items-center space-x-1 mb-1">
-              <div style={{ width: 24, height: 24, background: '#1c6d2a', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '0.95rem', boxShadow: '0 1px 3px rgba(0,0,0,0.10)' }}>N</div>
-              <span>A</span>
-              <div style={{ width: 24, height: 24, background: '#195b7c', borderRadius: 6, transform: 'rotate(45deg) scale(0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '0.95rem', boxShadow: '0 1px 3px rgba(0,0,0,0.10)' }}>
-                <span style={{ transform: 'rotate(-45deg) scale(1.176)', display: 'inline-block', width: '100%', textAlign: 'center' }}>I</span>
-              </div>
-              <div style={{ width: 24, height: 24, background: '#c85f31', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '0.95rem', boxShadow: '0 1px 3px rgba(0,0,0,0.10)' }}>L</div>
-            </div>
-            <div className="flex items-center mb-1 text-xs" style={{ color: '#992108' }}>
-              <FontAwesomeIcon icon={faTimesCircle} className="mr-1" /> Invalid word—letters appear out of order from provided letters.
-            </div>
-            </div>
-            {/* Footer - sticky at bottom */}
-            <div className="flex-shrink-0 border-t border-gray-200 p-4 sm:p-6 pt-3">
-              <label className="flex items-center gap-2 cursor-pointer text-sm text-gray-700">
-                <input
-                  type="checkbox"
-                  checked={showRulesOnStart}
-                  onChange={toggleShowRulesOnStart}
-                  className="w-4 h-4 rounded border-gray-300"
-                />
-                Show Rules on Game Start
-              </label>
+              {rulesWizardStep < 3 && (
+                <div className="flex justify-between gap-3 px-4 pb-4">
+                  <button
+                    type="button"
+                    onClick={() => setRulesWizardStep((s) => Math.max(0, s - 1))}
+                    disabled={rulesWizardStep === 0}
+                    className="px-4 py-2 rounded-lg border border-gray-300 text-sm font-medium text-gray-700 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-50"
+                  >
+                    Back
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRulesWizardStep((s) => Math.min(3, s + 1))}
+                    className="px-4 py-2 rounded-lg bg-gray-900 text-white text-sm font-medium hover:bg-gray-800"
+                  >
+                    Next
+                  </button>
+                </div>
+              )}
+              {rulesWizardStep === 3 && (
+                <>
+                  <div className="px-4 pb-2">
+                    <button
+                      type="button"
+                      onClick={closeRulesModal}
+                      className="w-full bg-white border border-gray-400 text-black py-3 rounded-lg text-lg font-semibold hover:bg-gray-50"
+                    >
+                      Let&apos;s Go!
+                    </button>
+                  </div>
+                  <div className="border-t border-gray-200 p-4 sm:p-6 pt-3 bg-gray-50/80">
+                    <label className="flex items-center gap-2 cursor-pointer text-sm text-gray-700">
+                      <input
+                        type="checkbox"
+                        checked={showRulesOnStart}
+                        onChange={toggleShowRulesOnStart}
+                        className="w-4 h-4 rounded border-gray-300"
+                      />
+                      Show Rules on Game Start
+                    </label>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -1877,6 +2874,33 @@ export default function WordPuzzleGame() {
         }
         .modal-fade-out {
           animation: modal-fade-out 0.2s ease-out forwards;
+        }
+
+        @keyframes rulesWizardSlideInNext {
+          from {
+            opacity: 0.65;
+            transform: translateX(22px);
+          }
+          to {
+            opacity: 1;
+            transform: translateX(0);
+          }
+        }
+        @keyframes rulesWizardSlideInPrev {
+          from {
+            opacity: 0.65;
+            transform: translateX(-22px);
+          }
+          to {
+            opacity: 1;
+            transform: translateX(0);
+          }
+        }
+        .rules-wizard-slide-next {
+          animation: rulesWizardSlideInNext 0.32s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards;
+        }
+        .rules-wizard-slide-prev {
+          animation: rulesWizardSlideInPrev 0.32s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards;
         }
         
         @keyframes dotDisappear {
@@ -1934,13 +2958,124 @@ export default function WordPuzzleGame() {
         .current-guess-dot {
           animation: currentGuessFade 0.35s ease-out forwards;
         }
+        @keyframes guessPopoverExpand {
+          from {
+            opacity: 0;
+            transform: scale(0.94) translateY(-6px);
+          }
+          to {
+            opacity: 1;
+            transform: scale(1) translateY(0);
+          }
+        }
+        .guess-popover-panel {
+          animation: guessPopoverExpand 0.22s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+        }
       `}</style>
-      
-      {!(isMobile && roundStarted && !gameOver) && (
-        <footer
-          className={`text-center ${isMobile ? "" : "py-4 mt-8"}`}
-          style={isMobile ? { position: 'fixed', bottom: 0, left: 0, right: 0, paddingTop: 5, paddingBottom: 5, zIndex: 15, background: 'white' } : undefined}
+
+      {/* Contact — same shell as Rules modal: sticky header / scroll body / sticky footer; version line only in mailto body */}
+      {showContactModal && (
+        <div
+          className="fixed top-0 left-0 right-0 bottom-0 bg-black bg-opacity-50 flex items-center justify-center z-[9999] modal-fade-in"
+          style={{ width: '100vw', height: '100vh', margin: 0, padding: 0 }}
+          onClick={closeContactModal}
+          role="presentation"
         >
+          <div
+            className="bg-white rounded-lg w-full max-w-xs sm:max-w-sm md:max-w-md mx-4 sm:mx-6 flex flex-col max-h-[min(90vh,90dvh)] overflow-hidden shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-labelledby="contact-modal-title"
+            aria-modal="true"
+          >
+            <div className="flex items-center justify-between flex-shrink-0 p-4 sm:p-6 pb-3 border-b border-gray-200 bg-white z-10">
+              <h2 id="contact-modal-title" className="text-lg font-bold text-left flex items-center gap-2">
+                <FontAwesomeIcon icon={faEnvelope} className="text-gray-600" />
+                Contact
+              </h2>
+              <button
+                type="button"
+                onClick={closeContactModal}
+                className="text-gray-500 hover:text-gray-700 text-lg sm:text-xl font-bold leading-none p-1 -mr-1 -mt-1"
+                aria-label="Close"
+              >
+                ×
+              </button>
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto text-left px-4 sm:px-6 py-4 space-y-4">
+              <div>
+                <label htmlFor="contact-email" className="block text-sm font-medium text-gray-700 mb-1">
+                  Your Email
+                </label>
+                <input
+                  id="contact-email"
+                  type="email"
+                  value={contactEmail}
+                  onChange={(e) => setContactEmail(e.target.value)}
+                  className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm"
+                  placeholder="you@example.com"
+                  autoComplete="email"
+                />
+              </div>
+              <div>
+                <label htmlFor="contact-subject" className="block text-sm font-medium text-gray-700 mb-1">
+                  Subject
+                </label>
+                <input
+                  id="contact-subject"
+                  type="text"
+                  value={contactSubject}
+                  onChange={(e) => setContactSubject(e.target.value)}
+                  className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm"
+                  placeholder="What is this about?"
+                />
+              </div>
+              <div>
+                <label htmlFor="contact-message" className="block text-sm font-medium text-gray-700 mb-1">
+                  Message
+                </label>
+                <textarea
+                  id="contact-message"
+                  value={contactMessage}
+                  onChange={(e) => setContactMessage(e.target.value)}
+                  className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm min-h-[140px] resize-y"
+                  placeholder="Your message…"
+                />
+              </div>
+            </div>
+            <div className="flex-shrink-0 border-t border-gray-200 bg-white p-4 sm:px-6 flex flex-row justify-between items-center gap-3 w-full">
+              <button
+                type="button"
+                onClick={closeContactModal}
+                className="px-4 py-2 rounded-lg border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSendContact}
+                disabled={!contactMessage.trim()}
+                className="px-4 py-2 rounded-lg bg-gray-900 text-white text-sm font-medium hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Send
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {footerBarVisible && (
+        <footer
+          className="fixed bottom-0 left-0 right-0 z-[15] bg-white border-t border-gray-200 text-center flex flex-col items-center gap-1.5 pt-2"
+          style={{ paddingBottom: 'max(8px, env(safe-area-inset-bottom, 0px))' }}
+        >
+          <button
+            type="button"
+            onClick={() => setShowContactModal(true)}
+            className="text-sm text-gray-600 hover:text-gray-800 underline decoration-gray-400 underline-offset-2"
+          >
+            Contact
+          </button>
           <p className="text-gray-500 italic text-sm">© 2026 Davis English. All Rights Reserved.</p>
         </footer>
       )}
