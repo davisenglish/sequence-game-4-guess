@@ -1397,7 +1397,7 @@ export default function WordPuzzleGame() {
         {!roundStarted && (
           <>
             <a 
-              href="https://davisenglish.github.io/sequence-game-home/"
+              href="https://stringlish.com"
               className="block hover:opacity-80 transition-opacity"
             >
               <img 
@@ -1439,7 +1439,7 @@ export default function WordPuzzleGame() {
                 </div>
                 <div className="flex items-center justify-center flex-shrink-0 space-x-3">
                   <a 
-                    href="https://davisenglish.github.io/sequence-game-home/"
+                    href="https://stringlish.com"
                     className="text-gray-600 hover:text-gray-800 transition-colors"
                     title="Home"
                   >
@@ -1522,7 +1522,7 @@ export default function WordPuzzleGame() {
           )}
           <div className="flex flex-row items-center space-x-4">
             <a 
-              href="https://davisenglish.github.io/sequence-game-home/"
+              href="https://stringlish.com"
               className="text-gray-600 hover:text-gray-800 transition-colors"
               title="Home"
             >
@@ -2379,14 +2379,13 @@ export default function WordPuzzleGame() {
             </details>
           </div>
           <div className={`flex flex-col items-center space-y-3 ${showRevealAnimation ? 'reveal-content' : ''}`}>
-            <button
-              type="button"
-              onClick={resetGame}
+            <a
+              href="https://stringlish.com"
               className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-sm font-semibold rounded border border-gray-400 bg-white text-black"
             >
               <FontAwesomeIcon icon={faHouseChimney} className="text-base shrink-0" />
               Home
-            </button>
+            </a>
           </div>
         </>
       )}
