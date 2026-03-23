@@ -1,3 +1,24 @@
+# Stringlish 5-Guess
+
+## Production (GitHub Pages)
+
+Live site: **https://davisenglish.github.io/sequence-game-5-guess/**
+
+The built app lives on the **`gh-pages`** branch (see workflow `.github/workflows/deploy-gh-pages.yml`). The repo **`main`** branch does **not** contain `index.html` at the root (the app builds to `build/`, which is gitignored).
+
+### If the site shows `README.md` instead of the game
+
+In the GitHub repo: **Settings → Pages → Build and deployment**:
+
+- **Source:** **Deploy from a branch**.
+- **Branch:** **`gh-pages`** — folder **`/ (root)`**.
+
+If you set the source to **`main`** and **`/ (root)`**, GitHub has no `index.html` there and may show the README. Switch back to **`gh-pages`**.
+
+Pushes to **`main`** run the workflow and update **`gh-pages`**. You can also deploy locally: `CI=false npm run deploy`.
+
+---
+
 # Getting Started with Create React App
 
 This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
