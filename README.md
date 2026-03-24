@@ -17,10 +17,6 @@ If you set the source to **`main`** and **`/ (root)`**, GitHub has no `index.htm
 
 Pushes to **`main`** run the workflow and update **`gh-pages`**. You can also deploy locally: `CI=false npm run deploy`.
 
-### Also on `stringlish.com/5-guess/` (homepage repo)
-
-If the main site is **`my-app-compilation`** with custom domain **`stringlish.com`**, you can embed this game at **`/5-guess/`** by copying a dedicated build into that repo’s **`public/5-guess/`**. See **`docs/STRINGLISH_EMBED.md`** and run **`npm run embed:stringlish`**.
-
 ---
 
 # Getting Started with Create React App

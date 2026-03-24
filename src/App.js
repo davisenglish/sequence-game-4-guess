@@ -986,44 +986,6 @@ export default function WordPuzzleGame() {
     setTimeout(() => setHintRevealAnimating(false), 300);
   };
 
-  /** Return to this app’s start screen (BEGIN) — game-over Home only; header home icons still use stringlish.com */
-  const resetGame = () => {
-    if (roundStarted && !gameOver) {
-      const newStats = { ...stats };
-      newStats.currentStreak = 0;
-      setStats(newStats);
-      localStorage.setItem('sequenceGameStats_v2_5guess', JSON.stringify(newStats));
-      markDailyAbandonedForLocalDate(getLocalDateString());
-      setDailyUiEpoch((e) => e + 1);
-    }
-
-    setRoundStarted(false);
-    setShowRevealAnimation(false);
-    setShowAllWords(false);
-    setShowStats(false);
-    setShowClearStatsButton(false);
-    setShowInstructions(false);
-    (async () => {
-      setLetters(await getDailyLetters(getLocalDateString()));
-    })();
-    setInput('');
-    inputValueRef.current = '';
-    setValidWords([]);
-    setScore(0);
-    setError(false);
-    setErrorMessage('');
-    setGuessesRemaining(GUESSES_PER_DAY);
-    setGameOver(false);
-    setLetterPopup(null);
-    setManuallyEnded(false);
-    setHintWord(null);
-    setHintAvailable(false);
-    setHintFillProgress(0);
-    setHintReadyPop(false);
-    clearHintTimers();
-    hintTimerStartedThisRoundRef.current = false;
-  };
-
   const updateStats = () => {
     const newStats = { ...stats };
     
@@ -1411,7 +1373,10 @@ export default function WordPuzzleGame() {
               />
             </a>
             <h1 className="text-3xl font-bold">Stringlish</h1>
-            <p className="text-lg font-medium text-gray-600 mt-1">5-Guess</p>
+            <p className="text-lg font-medium text-gray-600 mt-1 flex items-center justify-center gap-2">
+              <span className="select-none" aria-hidden>🔮</span>
+              <span>5-Guess</span>
+            </p>
           </>
         )}
         {!roundStarted && (
@@ -2380,14 +2345,13 @@ export default function WordPuzzleGame() {
             </details>
           </div>
           <div className={`flex flex-col items-center space-y-3 ${showRevealAnimation ? 'reveal-content' : ''}`}>
-            <button
-              type="button"
-              onClick={resetGame}
+            <a
+              href="https://stringlish.com"
               className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-sm font-semibold rounded border border-gray-400 bg-white text-black"
             >
               <FontAwesomeIcon icon={faHouseChimney} className="text-base shrink-0" />
               Home
-            </button>
+            </a>
           </div>
         </>
       )}
@@ -2611,7 +2575,7 @@ export default function WordPuzzleGame() {
                   const dd = String(d.getDate()).padStart(2, '0');
                   const yy = String(d.getFullYear()).slice(-2);
                   const score = localStorage.getItem('currentRoundScore_v2_5guess') || '0';
-                  const text = `Stringlish, ${mm}/${dd}/${yy} - Total Score: ${score}. See if you can beat me at https://www.stringlish.com/`;
+                  const text = `Stringlish | 5-Guess 🔮, ${mm}/${dd}/${yy} - Total Score: ${score}. See if you can beat me at https://www.stringlish.com/`;
                   if (typeof navigator.share === 'function') {
                     try {
                       await navigator.share({ text });
