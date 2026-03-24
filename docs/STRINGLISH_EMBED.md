@@ -55,3 +55,32 @@ Keep **`https://davisenglish.github.io/sequence-game-5-guess/`** if you still wa
 ## Optional: don’t commit `public/5-guess/` in git
 
 You can instead run **`embed-in-compilation.sh`** only in **CI** before building the homepage, and add `public/5-guess/` to **`.gitignore`** in `my-app-compilation`. That keeps a single source of truth but requires a workflow that clones/builds this repo.
+
+---
+
+## Same idea: **timed** game at `stringlish.com/timed/` (`sequence-game-timed` / `my-app-ver4`)
+
+**Yes, it’s possible** using the same pattern:
+
+1. In **`my-app-ver4`**, set **`homepage`** to **`https://stringlish.com/timed`** for that build.
+2. Copy **`build/`** → **`my-app-compilation/public/timed/`**.
+3. Rebuild and deploy **`my-app-compilation`**.
+
+You can mirror **`scripts/embed-in-compilation.sh`** in the timed repo (change target folder to **`public/timed`** and homepage to **`https://stringlish.com/timed`**), or do the two steps by hand.
+
+Link from the homepage with **`/timed/`**.
+
+### Will stats / puzzles get confusing on one domain?
+
+**localStorage is per origin** (`stringlish.com`), not per path. So both games share one storage “bucket.” That only causes problems if they use the **same keys**.
+
+Your editions are already separated:
+
+| Edition | Example keys |
+|--------|----------------|
+| **5-guess** (this repo) | `stringlich5_dailyCompletedUtc_v2`, `sequenceGameStats_v2_5guess`, … |
+| **Timed** (`my-app-ver4`) | `stringlich_timed_dailyCompletedUtc_v4`, `sequenceGameTimedStats`, … |
+
+So **statistics modals and progress stay independent**—playing one game doesn’t overwrite the other’s stats.
+
+**Letter / puzzle generation** is also separate in code (each app has its own daily logic and CSV loads). The only shared “gotcha” is **UX**: users might not realize there are two modes; clear labels and links on the homepage (**5-Guess** vs **Timed**) help more than any technical conflict.
