@@ -88,12 +88,74 @@ function getLocalDateString(d = new Date()) {
   return `${y}-${m}-${day}`;
 }
 
+/** True if `prevYmd` is exactly one local calendar day before `nextYmd` (YYYY-MM-DD). */
+function isLocalYmdImmediatelyBefore(prevYmd, nextYmd) {
+  const [py, pm, pd] = prevYmd.split('-').map(Number);
+  const [ny, nm, nd] = nextYmd.split('-').map(Number);
+  const p = new Date(py, pm - 1, pd);
+  const n = new Date(ny, nm - 1, nd);
+  return (n.getTime() - p.getTime()) / 86400000 === 1;
+}
+
+/** Last win was today or yesterday — streak can still extend with a win today. */
+function isDailyStreakCalendarActive(lastWinPuzzleDate, todayStr) {
+  if (!lastWinPuzzleDate) return false;
+  if (lastWinPuzzleDate === todayStr) return true;
+  return isLocalYmdImmediatelyBefore(lastWinPuzzleDate, todayStr);
+}
+
+/**
+ * If the player missed any calendar day after their last recorded win, current streak is not active.
+ * Old saves without lastWinPuzzleDate: zero currentStreak so we don't show unverifiable numbers.
+ */
+function normalizeStatsStreak(raw) {
+  const s = { ...raw };
+  const last = s.lastWinPuzzleDate;
+  if (!last) {
+    if ((s.currentStreak || 0) > 0) s.currentStreak = 0;
+    return s;
+  }
+  if (isDailyStreakCalendarActive(last, getLocalDateString())) return s;
+  s.currentStreak = 0;
+  return s;
+}
+
+/** After a winning day (≥1 valid word), set streak from calendar continuity and record last win date. */
+function applyDailyCalendarWinStreak(tempStats, puzzleDateStr) {
+  const prevLast = tempStats.lastWinPuzzleDate || null;
+  let nextStreak;
+  if (prevLast === puzzleDateStr) {
+    nextStreak = tempStats.currentStreak || 0;
+  } else if (prevLast && isLocalYmdImmediatelyBefore(prevLast, puzzleDateStr)) {
+    nextStreak = (tempStats.currentStreak || 0) + 1;
+  } else {
+    nextStreak = 1;
+  }
+  tempStats.currentStreak = nextStreak;
+  tempStats.lastWinPuzzleDate = puzzleDateStr;
+  if (tempStats.currentStreak > tempStats.maxStreak) {
+    tempStats.maxStreak = tempStats.currentStreak;
+  }
+}
+
 function hashStringToInt(str) {
   let h = 0;
   for (let i = 0; i < str.length; i++) {
     h = ((h << 5) - h + str.charCodeAt(i)) | 0;
   }
   return Math.abs(h);
+}
+
+/** Same seed ⇒ same order for all players sharing this calendar day + triplet (matches daily puzzle identity). */
+function sortAnswersDeterministic(answers, seedKey) {
+  return [...answers].sort((a, b) => {
+    const sa = String(a).trim().toUpperCase();
+    const sb = String(b).trim().toUpperCase();
+    const ha = hashStringToInt(`${seedKey}|${sa}`);
+    const hb = hashStringToInt(`${seedKey}|${sb}`);
+    if (ha !== hb) return ha - hb;
+    return sa.localeCompare(sb);
+  });
 }
 
 /** Display number: #1 = March 22, 2026 on the user's local calendar; #2 = Mar 23 local, etc. */
@@ -200,36 +262,48 @@ function findPossibleAnswers(letters, max = 2) {
   return candidates.sort((a, b) => a.length - b.length || a.localeCompare(b)).slice(0, max);
 }
 
-// Get single possible answer for hint system (from CSV when available)
-async function getOnePossibleAnswer(letters) {
-  const answers = await getPossibleAnswersFromCsv(letters, 20);
-  if (!answers || answers.length === 0) return null;
-  return answers[Math.floor(Math.random() * answers.length)];
-}
-
-// Get possible answers from CSV columns C-L for the chosen triplet (for game over display and hint source).
-// Triplets always come from the CSV (getDailyLetters), so the row always exists and has answers.
-async function getPossibleAnswersFromCsv(letters, max = 5) {
+// Full CSV answer list for `letters`, sorted deterministically for this local puzzle day (same as my-app-ver4).
+async function getSortedCsvAnswersForLetters(letters, puzzleDateStr) {
+  const dayKey = puzzleDateStr ?? getLocalDateString();
+  const seedKey = `${dayKey}|${letters.toUpperCase()}`;
   const data = await loadTripletsData();
   if (!data || !letters || letters.length !== 3) return [];
   const normalized = letters.toUpperCase();
-  const entry = data.find(item => item.letters === normalized);
+  const entry = data.find((item) => item.letters === normalized);
   if (!entry || !entry.answers || entry.answers.length === 0) return [];
-  const list = entry.answers.filter(a => a && a.trim());
-  const shuffled = [...list].sort(() => Math.random() - 0.5);
-  return shuffled.slice(0, Math.min(max, shuffled.length));
+  const list = entry.answers.filter((a) => a && a.trim());
+  return sortAnswersDeterministic(list, seedKey);
+}
+
+/** Hint target: one canonical word per calendar day + triplet (same pool cap as before: up to 20). */
+async function getOnePossibleAnswer(letters, puzzleDateStr) {
+  const dayKey = puzzleDateStr ?? getLocalDateString();
+  const seedKey = `${dayKey}|${letters.toUpperCase()}`;
+  const sorted = await getSortedCsvAnswersForLetters(letters, dayKey);
+  if (!sorted.length) return null;
+  const n = Math.min(20, sorted.length);
+  const hintPool = sorted.slice(0, n);
+  const idx = hashStringToInt(`${seedKey}|hint-target`) % hintPool.length;
+  return hintPool[idx] ?? null;
+}
+
+// Get possible answers from CSV columns C-L for the chosen triplet (game over display and hint source).
+async function getPossibleAnswersFromCsv(letters, max = 5, puzzleDateStr) {
+  const sorted = await getSortedCsvAnswersForLetters(letters, puzzleDateStr);
+  return sorted.slice(0, Math.min(max, sorted.length));
 }
 
 // Component to display possible answers from CSV (game over). ensureIncluded (hint word) is always
 // shown first and counts toward max, so the hint always appears in the list.
-function PossibleAnswersFromCsv({ letters, max = 5, ensureIncluded, className = '' }) {
+function PossibleAnswersFromCsv({ letters, max = 5, ensureIncluded, className = '', puzzleDate }) {
   const [answers, setAnswers] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let isMounted = true;
     (async () => {
-      const result = await getPossibleAnswersFromCsv(letters, max + 5); // get extra so we have enough after reserving for hint
+      const dayKey = puzzleDate ?? getLocalDateString();
+      const result = await getPossibleAnswersFromCsv(letters, max + 5, dayKey); // get extra so we have enough after reserving for hint
       if (!isMounted) return;
       const normalized = (w) => (w || '').trim().toUpperCase();
       let rest = (result || []).map(normalized).filter(Boolean);
@@ -245,7 +319,7 @@ function PossibleAnswersFromCsv({ letters, max = 5, ensureIncluded, className = 
       setLoading(false);
     })();
     return () => { isMounted = false; };
-  }, [letters, max, ensureIncluded]);
+  }, [letters, max, ensureIncluded, puzzleDate]);
 
   // Base was calc(0.875rem + 6pt) / calc(0.75rem + 6pt); scaled down 45% → ×0.55
   const wordFs = 'calc(0.875rem * 0.55 + 6pt * 0.55)';
@@ -387,6 +461,7 @@ export default function WordPuzzleGame() {
       return true;
     }
   });
+  const [showGiveUpConfirm, setShowGiveUpConfirm] = useState(false);
   const [rulesWizardStep, setRulesWizardStep] = useState(0); // 0–3 (four steps)
   const prevRulesWizardStepRef = useRef(0);
   const rulesWizardTouchStartRef = useRef(null);
@@ -451,10 +526,21 @@ export default function WordPuzzleGame() {
       }
       setLetters(await getDailyLetters(puzzleDay));
     })();
-    // Load stats from localStorage - version specific
+    // Load stats from localStorage - version specific (calendar streak may zero stale currentStreak)
     const savedStats = localStorage.getItem('sequenceGameStats_v2_5guess');
     if (savedStats) {
-      setStats(JSON.parse(savedStats));
+      try {
+        const parsed = JSON.parse(savedStats);
+        const norm = normalizeStatsStreak(parsed);
+        if (JSON.stringify(norm) !== savedStats) {
+          try {
+            localStorage.setItem('sequenceGameStats_v2_5guess', JSON.stringify(norm));
+          } catch (_) {}
+        }
+        setStats(norm);
+      } catch (_) {
+        /* ignore corrupt stats JSON */
+      }
     }
     
     // Detect mobile/tablet (show virtual keyboard for phones and tablets) and track viewport for keyboard scaling
@@ -654,14 +740,17 @@ export default function WordPuzzleGame() {
       setDailyUiEpoch((e) => e + 1);
       if (roundStartedRef.current && !gameOverRef.current) {
         markDailyAbandonedForLocalDate(prevDay);
-        setStats((prev) => {
-          const next = { ...prev, currentStreak: 0 };
-          try {
-            localStorage.setItem('sequenceGameStats_v2_5guess', JSON.stringify(next));
-          } catch (_) {}
-          return next;
-        });
       }
+      setStats((prev) => {
+        let n = normalizeStatsStreak({ ...prev });
+        if (roundStartedRef.current && !gameOverRef.current) {
+          n = { ...n, currentStreak: 0 };
+        }
+        try {
+          localStorage.setItem('sequenceGameStats_v2_5guess', JSON.stringify(n));
+        } catch (_) {}
+        return n;
+      });
       setRoundStarted(false);
       setGameOver(false);
       setShowRevealAnimation(false);
@@ -825,7 +914,7 @@ export default function WordPuzzleGame() {
       }
       if (!(await isValidWord(word))) {
         setError(true);
-        setErrorMessage('Not a valid English word');
+        setErrorMessage('Word not found in list');
         setValidWords(prev => [...prev, { word, length: 'x', bonusTime: 0, isValid: false }]);
         setInput(''); inputValueRef.current = '';
         setGuessesRemaining(prev => prev - 1);
@@ -865,7 +954,7 @@ export default function WordPuzzleGame() {
     setGameOver(true);
     
     // Update stats when game ends - use the updated validWords array
-    const tempStats = { ...stats };
+    const tempStats = normalizeStatsStreak({ ...stats });
     
     // Ensure all required properties exist
     tempStats.gamesPlayed = tempStats.gamesPlayed || 0;
@@ -886,13 +975,10 @@ export default function WordPuzzleGame() {
       tempStats.gamesWon += 1;
     }
     
-    // Update streak (count rounds with at least 1 valid word)
+    // Streak: win every local calendar day (≥1 valid word); skip a day → reset to 1 on next win
+    const puzzleDay = getLocalDateString();
     if (validWordCount > 0) {
-      tempStats.currentStreak += 1;
-      // Update max streak if current streak is higher
-      if (tempStats.currentStreak > tempStats.maxStreak) {
-        tempStats.maxStreak = tempStats.currentStreak;
-      }
+      applyDailyCalendarWinStreak(tempStats, puzzleDay);
     } else {
       tempStats.currentStreak = 0;
     }
@@ -974,7 +1060,7 @@ export default function WordPuzzleGame() {
       setErrorMessage('Hint available after 30 seconds');
       return;
     }
-    const word = await getOnePossibleAnswer(letters);
+    const word = await getOnePossibleAnswer(letters, getLocalDateString());
     if (!word) return;
     const hintVal = word.slice(0, 3).toLowerCase();
     setHintWord(word);
@@ -987,7 +1073,7 @@ export default function WordPuzzleGame() {
   };
 
   const updateStats = () => {
-    const newStats = { ...stats };
+    const newStats = normalizeStatsStreak({ ...stats });
     
     // Ensure all required properties exist
     newStats.gamesPlayed = newStats.gamesPlayed || 0;
@@ -1010,13 +1096,9 @@ export default function WordPuzzleGame() {
         newStats.gamesWon += 1;
       }
       
-      // Update streak (count rounds with at least 1 valid word)
+      const puzzleDay = getLocalDateString();
       if (validWordCount > 0) {
-        newStats.currentStreak += 1;
-        // Update max streak if current streak is higher
-        if (newStats.currentStreak > newStats.maxStreak) {
-          newStats.maxStreak = newStats.currentStreak;
-        }
+        applyDailyCalendarWinStreak(newStats, puzzleDay);
       } else {
         newStats.currentStreak = 0;
       }
@@ -1433,7 +1515,7 @@ export default function WordPuzzleGame() {
                   {!gameOver && (
                     <button
                       type="button"
-                      onClick={handleEndGame}
+                      onClick={() => setShowGiveUpConfirm(true)}
                       className="text-sm text-gray-500 hover:text-gray-700 transition-colors"
                     >
                       Give Up?
@@ -2340,7 +2422,13 @@ export default function WordPuzzleGame() {
                 />
               </summary>
               <div className="mt-2.5 border-t border-gray-100/90 pt-2.5">
-                <PossibleAnswersFromCsv letters={letters} max={5} ensureIncluded={hintWord} className="justify-start" />
+                <PossibleAnswersFromCsv
+                  letters={letters}
+                  max={5}
+                  ensureIncluded={hintWord}
+                  puzzleDate={getLocalDateString()}
+                  className="justify-start"
+                />
               </div>
             </details>
           </div>
@@ -2354,6 +2442,42 @@ export default function WordPuzzleGame() {
             </a>
           </div>
         </>
+      )}
+
+      {/* Give Up confirmation modal */}
+      {showGiveUpConfirm && roundStarted && !gameOver && (
+        <div
+          className="fixed top-0 left-0 right-0 bottom-0 bg-black bg-opacity-50 flex items-center justify-center z-[10000]"
+          style={{ width: '100vw', height: '100vh', margin: 0, padding: 0 }}
+        >
+          <div className="bg-white rounded-lg w-full max-w-xs sm:max-w-sm md:max-w-md mx-4 sm:mx-6 shadow-xl">
+            <div className="p-4 sm:p-6 pb-3 border-b border-gray-200">
+              <h2 className="text-lg font-bold text-center">Are You Sure?</h2>
+            </div>
+            <div className="px-4 sm:px-6 py-4 text-sm text-gray-700 text-center">
+              Don&apos;t do something you may regret...dig deep-you got this!
+            </div>
+            <div className="flex justify-between gap-3 px-4 sm:px-6 pb-4">
+              <button
+                type="button"
+                onClick={() => setShowGiveUpConfirm(false)}
+                className="px-4 py-2 rounded-lg border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              >
+                No, Keep Playing
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowGiveUpConfirm(false);
+                  handleEndGame();
+                }}
+                className="px-4 py-2 rounded-lg bg-gray-900 text-white text-sm font-medium hover:bg-gray-800"
+              >
+                Yes, End Game
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Statistics Modal */}
