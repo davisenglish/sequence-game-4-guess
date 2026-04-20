@@ -1,4 +1,4 @@
-# Stringlish 5-Guess
+# Stringlish 4-Guess
 
 ## Production (GitHub Pages)
 
