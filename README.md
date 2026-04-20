@@ -2,7 +2,7 @@
 
 ## Production (GitHub Pages)
 
-Live site: **https://davisenglish.github.io/sequence-game-5-guess/**
+Live site: **https://davisenglish.github.io/sequence-game-4-guess/**
 
 The built app lives on the **`gh-pages`** branch (see workflow `.github/workflows/deploy-gh-pages.yml`). The repo **`main`** branch does **not** contain `index.html` at the root (the app builds to `build/`, which is gitignored).
 
