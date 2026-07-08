@@ -73,6 +73,37 @@ async function loadTripletsData() {
   return tripletsDataPromise;
 }
 
+// Word list from SCOWL/Wordnik CSV for guess validation
+let wordListSet = null;
+let wordListPromise = null;
+
+async function loadWordList() {
+  if (wordListSet) return wordListSet;
+  if (wordListPromise) return wordListPromise;
+
+  wordListPromise = (async () => {
+    try {
+      const response = await fetch(`${process.env.PUBLIC_URL}/words-enable.scowl.wordnik.csv`);
+      const text = await response.text();
+      const lines = text.trim().split('\n');
+      const set = new Set();
+      for (let i = 0; i < lines.length; i++) {
+        const w = lines[i].trim().toLowerCase();
+        if (!w || (i === 0 && w === 'word')) continue;
+        set.add(w);
+      }
+      wordListSet = set;
+      return set;
+    } catch (error) {
+      console.error('Error loading word list CSV:', error);
+      wordListSet = new Set();
+      return wordListSet;
+    }
+  })();
+
+  return wordListPromise;
+}
+
 const LS_DAILY = {
   completedUtc: 'stringlich5_dailyCompletedUtc_v3',
   abandonedUtc: 'stringlich5_dailyAbandonedUtc_v3',
@@ -265,15 +296,9 @@ async function isValidWord(word) {
   
   const lowerWord = word.toLowerCase();
   if (swearWords.includes(lowerWord)) return false;
-  
-  try {
-    const response = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${word}`);
-    if (!response.ok) return false;
-    const data = await response.json();
-    return Array.isArray(data) && data[0]?.word?.toLowerCase() === word.toLowerCase();
-  } catch {
-    return false;
-  }
+
+  const wordSet = await loadWordList();
+  return wordSet.has(lowerWord);
 }
 
 // Helper to find 1-2 possible valid words for a given sequence
@@ -299,8 +324,8 @@ async function getSortedCsvAnswersForLetters(letters, puzzleDateStr) {
   return sortAnswersDeterministic(list, seedKey);
 }
 
-/** Hint target: one canonical word per calendar day + triplet (same pool cap as before: up to 20). */
-async function getOnePossibleAnswer(letters, puzzleDateStr) {
+/** Canonical hint word for this calendar day + triplet (same for every player). */
+async function getDailyHintWord(letters, puzzleDateStr) {
   const dayKey = puzzleDateStr ?? getLocalDateString();
   const seedKey = `${dayKey}|${letters.toUpperCase()}`;
   const sorted = await getSortedCsvAnswersForLetters(letters, dayKey);
@@ -311,15 +336,22 @@ async function getOnePossibleAnswer(letters, puzzleDateStr) {
   return hintPool[idx] ?? null;
 }
 
-// Get possible answers from CSV columns C-L for the chosen triplet (game over display and hint source).
+// Possible answers for game-over display: daily hint word first, then others (same list for all players).
 async function getPossibleAnswersFromCsv(letters, max = 4, puzzleDateStr) {
-  const sorted = await getSortedCsvAnswersForLetters(letters, puzzleDateStr);
-  return sorted.slice(0, Math.min(max, sorted.length));
+  const dayKey = puzzleDateStr ?? getLocalDateString();
+  const sorted = await getSortedCsvAnswersForLetters(letters, dayKey);
+  const dailyHint = await getDailyHintWord(letters, dayKey);
+  const normalized = (w) => String(w || '').trim().toUpperCase();
+  let rest = sorted.map(normalized).filter(Boolean);
+  const hint = dailyHint ? normalized(dailyHint) : null;
+  if (hint) {
+    rest = rest.filter((w) => w !== hint);
+    return [hint, ...rest].slice(0, max);
+  }
+  return rest.slice(0, max);
 }
 
-// Component to display possible answers from CSV (game over). ensureIncluded (hint word) is always
-// shown first and counts toward max, so the hint always appears in the list.
-function PossibleAnswersFromCsv({ letters, max = 4, ensureIncluded, className = '', puzzleDate }) {
+function PossibleAnswersFromCsv({ letters, max = 4, className = '', puzzleDate }) {
   const [answers, setAnswers] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -327,23 +359,13 @@ function PossibleAnswersFromCsv({ letters, max = 4, ensureIncluded, className = 
     let isMounted = true;
     (async () => {
       const dayKey = puzzleDate ?? getLocalDateString();
-      const result = await getPossibleAnswersFromCsv(letters, max + 5, dayKey); // get extra so we have enough after reserving for hint
+      const result = await getPossibleAnswersFromCsv(letters, max, dayKey);
       if (!isMounted) return;
-      const normalized = (w) => (w || '').trim().toUpperCase();
-      let rest = (result || []).map(normalized).filter(Boolean);
-      const included = ensureIncluded && typeof ensureIncluded === 'string' ? normalized(ensureIncluded) : null;
-      let display;
-      if (included) {
-        rest = rest.filter((w) => w !== included);
-        display = [included, ...rest].slice(0, max);
-      } else {
-        display = rest.slice(0, max);
-      }
-      setAnswers(display);
+      setAnswers((result || []).map((w) => String(w || '').trim().toUpperCase()).filter(Boolean));
       setLoading(false);
     })();
     return () => { isMounted = false; };
-  }, [letters, max, ensureIncluded, puzzleDate]);
+  }, [letters, max, puzzleDate]);
 
   // Base was calc(0.875rem + 6pt) / calc(0.75rem + 6pt); scaled down 45% → ×0.55
   const wordFs = 'calc(0.875rem * 0.55 + 6pt * 0.55)';
@@ -430,6 +452,54 @@ function RulesWizardLinShapes() {
   );
 }
 
+function RulesExampleGuess({ valid, label, children }) {
+  return (
+    <div
+      className={`rounded-lg border px-3 py-2.5 mb-2.5 ${
+        valid ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'
+      }`}
+    >
+      <div className="flex items-start gap-2 mb-2">
+        <FontAwesomeIcon
+          icon={valid ? faCheckCircle : faTimesCircle}
+          className="flex-shrink-0 mt-0.5 text-base"
+          style={{ color: valid ? '#1c6d2a' : '#992108' }}
+        />
+        <span
+          className={`leading-snug ${valid ? 'text-green-800' : 'text-red-800'}`}
+        >
+          {label}
+        </span>
+      </div>
+      <div className="flex flex-wrap items-center gap-x-1 gap-y-1 pl-6">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+const ICON_MODAL_ANIM_MS = 300;
+
+function computeIconModalShrinkStyle(iconEl, cardEl) {
+  if (!iconEl || !cardEl) {
+    return {
+      cardTransform: 'translate(0px, 0px) scale(0.08)',
+      overlayOpacity: 0,
+    };
+  }
+  const icon = iconEl.getBoundingClientRect();
+  const card = cardEl.getBoundingClientRect();
+  const iconCx = icon.left + icon.width / 2;
+  const iconCy = icon.top + icon.height / 2;
+  const cardCx = card.left + card.width / 2;
+  const cardCy = card.top + card.height / 2;
+  const scale = Math.min(icon.width / card.width, icon.height / card.height);
+  return {
+    cardTransform: `translate(${iconCx - cardCx}px, ${iconCy - cardCy}px) scale(${Math.max(scale, 0.05)})`,
+    overlayOpacity: 0,
+  };
+}
+
 export default function WordPuzzleGame() {
   const [letters, setLetters] = useState('');
   const [roundStarted, setRoundStarted] = useState(false);
@@ -463,7 +533,23 @@ export default function WordPuzzleGame() {
   });
   const [showRules, setShowRules] = useState(false);
   const [rulesModalClosing, setRulesModalClosing] = useState(false);
+  const rulesIconRef = useRef(null);
+  const rulesModalCardRef = useRef(null);
+  const rulesModalAnimTokenRef = useRef(0);
+  const [rulesModalAnim, setRulesModalAnim] = useState({
+    cardTransform: 'translate(0px, 0px) scale(1)',
+    overlayOpacity: 1,
+    transitionEnabled: false,
+  });
   const [statsModalClosing, setStatsModalClosing] = useState(false);
+  const statsIconRef = useRef(null);
+  const statsModalCardRef = useRef(null);
+  const statsModalAnimTokenRef = useRef(0);
+  const [statsModalAnim, setStatsModalAnim] = useState({
+    cardTransform: 'translate(0px, 0px) scale(1)',
+    overlayOpacity: 1,
+    transitionEnabled: false,
+  });
   /** Hidden by default; click chart icon in Statistics modal to show (testing) */
   const [showClearStatsButton, setShowClearStatsButton] = useState(false);
   /** Bump when daily localStorage (completed/abandoned) changes so home UI re-reads */
@@ -486,12 +572,13 @@ export default function WordPuzzleGame() {
     }
   });
   const [showGiveUpConfirm, setShowGiveUpConfirm] = useState(false);
-  const [rulesWizardStep, setRulesWizardStep] = useState(0); // 0–3 (four steps)
+  const [rulesWizardStep, setRulesWizardStep] = useState(0); // 0–2 (three steps)
   const prevRulesWizardStepRef = useRef(0);
   const rulesWizardTouchStartRef = useRef(null);
   const rulesDismissedOnceRef = useRef(false);
   const hintTimerStartedThisRoundRef = useRef(false);
   const [hintWord, setHintWord] = useState(null);
+  const [dailyHintWord, setDailyHintWord] = useState(null);
   const [hintRevealAnimating, setHintRevealAnimating] = useState(false);
   const [hintAvailable, setHintAvailable] = useState(false);
   const [hintFillProgress, setHintFillProgress] = useState(0);
@@ -528,6 +615,7 @@ export default function WordPuzzleGame() {
   const prevScoreRef = useRef(0);
   const isSubmittingRef = useRef(false);
   useEffect(() => {
+    loadWordList();
     (async () => {
       const puzzleDay = getLocalDateString();
       lastLocalDateRef.current = puzzleDay;
@@ -608,7 +696,7 @@ export default function WordPuzzleGame() {
         // Show stats modal automatically after a brief delay (with round-result banner)
         setTimeout(() => {
           setStatsShowGameResultBanner(true);
-          setShowStats(true);
+          openStatsModal();
         }, 500);
       }, 600); // Slightly longer than the dot animation duration
     }
@@ -715,6 +803,22 @@ export default function WordPuzzleGame() {
     }
   };
 
+  // Canonical hint word for today's triplet — same for every player on this calendar day.
+  useEffect(() => {
+    let cancelled = false;
+    if (!letters) {
+      setDailyHintWord(null);
+      return undefined;
+    }
+    (async () => {
+      const w = await getDailyHintWord(letters, getLocalDateString());
+      if (!cancelled) setDailyHintWord(w);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [letters]);
+
   // Hint: available 30s after rules are closed (timer does not start while rules modal is open).
   // Start the timer only once per round when rules are first closed; reopening rules mid-game does not restart it.
   useEffect(() => {
@@ -795,6 +899,7 @@ export default function WordPuzzleGame() {
       setLetterPopup(null);
       setManuallyEnded(false);
       setHintWord(null);
+      setDailyHintWord(null);
       setHintAvailable(false);
       setHintFillProgress(0);
       setHintReadyPop(false);
@@ -878,7 +983,7 @@ export default function WordPuzzleGame() {
     localStorage.setItem('currentRoundLongestWords_v2_4guess', JSON.stringify(validWordsThisRound));
     setTimeout(() => {
       setStatsShowGameResultBanner(true);
-      setShowStats(true);
+      openStatsModal();
     }, 500);
   };
 
@@ -893,7 +998,7 @@ export default function WordPuzzleGame() {
       rulesDismissedOnceRef.current = false;
     setRoundStarted(true);
       if (showRulesOnStart) {
-        setShowRules(true);
+        openRulesModal();
       } else {
         rulesDismissedOnceRef.current = true;
         // No rules modal: letters appear immediately with reveal; mark animation played after duration
@@ -930,6 +1035,7 @@ export default function WordPuzzleGame() {
       const word = (typeof currentInput === 'string' ? currentInput : '').trim().toLowerCase();
       if (!word) { setError(true); setErrorMessage('Please enter a word'); setInput(''); inputValueRef.current = ''; return; }
       if (validWords.some(v => v.word === word)) { setError(true); setErrorMessage('Already guessed'); setInput(''); inputValueRef.current = ''; return; }
+      if (word.length < 5) { setError(true); setErrorMessage('Must be 5+ letters long'); setInput(''); inputValueRef.current = ''; return; }
     
     if (!isSequential(word, letters)) { 
       setError(true); 
@@ -1069,7 +1175,7 @@ export default function WordPuzzleGame() {
     // Show stats modal automatically after a brief delay (with round-result banner)
     setTimeout(() => {
       setStatsShowGameResultBanner(true);
-      setShowStats(true);
+      openStatsModal();
     }, 500);
   };
 
@@ -1085,8 +1191,9 @@ export default function WordPuzzleGame() {
       setErrorMessage('Hint available after 30 seconds');
       return;
     }
-    const word = await getOnePossibleAnswer(letters, getLocalDateString());
+    const word = dailyHintWord ?? await getDailyHintWord(letters, getLocalDateString());
     if (!word) return;
+    if (!dailyHintWord) setDailyHintWord(word);
     const hintVal = word.slice(0, 3).toLowerCase();
     setHintWord(word);
     inputValueRef.current = hintVal;
@@ -1367,15 +1474,144 @@ export default function WordPuzzleGame() {
   /** Main “provided letters” shapes — match my-app-ver4 (92px, 1.95rem letter size) */
   const size = 92;
 
+  const openRulesModal = () => {
+    rulesModalAnimTokenRef.current += 1;
+    setRulesModalClosing(false);
+    setRulesModalAnim({
+      cardTransform: 'translate(0px, 0px) scale(1)',
+      overlayOpacity: 0,
+      transitionEnabled: false,
+    });
+    setShowRules(true);
+  };
+
+  useLayoutEffect(() => {
+    if (!showRules || rulesModalClosing) return undefined;
+
+    const token = rulesModalAnimTokenRef.current;
+    const shrunk = computeIconModalShrinkStyle(
+      rulesIconRef.current,
+      rulesModalCardRef.current
+    );
+
+    setRulesModalAnim({
+      ...shrunk,
+      transitionEnabled: false,
+    });
+
+    let innerFrame = null;
+    const outerFrame = requestAnimationFrame(() => {
+      innerFrame = requestAnimationFrame(() => {
+        if (token !== rulesModalAnimTokenRef.current) return;
+        setRulesModalAnim({
+          cardTransform: 'translate(0px, 0px) scale(1)',
+          overlayOpacity: 1,
+          transitionEnabled: true,
+        });
+      });
+    });
+
+    return () => {
+      cancelAnimationFrame(outerFrame);
+      if (innerFrame != null) cancelAnimationFrame(innerFrame);
+    };
+  }, [showRules, rulesModalClosing]);
+
   const closeRulesModal = () => {
     rulesDismissedOnceRef.current = true;
+    const token = ++rulesModalAnimTokenRef.current;
+    const shrunk = computeIconModalShrinkStyle(
+      rulesIconRef.current,
+      rulesModalCardRef.current
+    );
+
     setRulesModalClosing(true);
-    setShowRules(false);
+    setRulesModalAnim({
+      ...shrunk,
+      transitionEnabled: true,
+    });
+
     setTimeout(() => {
+      if (token !== rulesModalAnimTokenRef.current) return;
+      setShowRules(false);
       setRulesModalClosing(false);
+      setRulesModalAnim({
+        cardTransform: 'translate(0px, 0px) scale(1)',
+        overlayOpacity: 1,
+        transitionEnabled: false,
+      });
       setTimeout(() => setRevealAnimationPlayedThisRound(true), 500);
       setTimeout(() => inputRef.current?.focus(), 100);
-    }, 200);
+    }, ICON_MODAL_ANIM_MS);
+  };
+
+  const openStatsModal = () => {
+    statsModalAnimTokenRef.current += 1;
+    setStatsModalClosing(false);
+    setStatsModalAnim({
+      cardTransform: 'translate(0px, 0px) scale(1)',
+      overlayOpacity: 0,
+      transitionEnabled: false,
+    });
+    setShowStats(true);
+  };
+
+  useLayoutEffect(() => {
+    if (!showStats || statsModalClosing) return undefined;
+
+    const token = statsModalAnimTokenRef.current;
+    const shrunk = computeIconModalShrinkStyle(
+      statsIconRef.current,
+      statsModalCardRef.current
+    );
+
+    setStatsModalAnim({
+      ...shrunk,
+      transitionEnabled: false,
+    });
+
+    let innerFrame = null;
+    const outerFrame = requestAnimationFrame(() => {
+      innerFrame = requestAnimationFrame(() => {
+        if (token !== statsModalAnimTokenRef.current) return;
+        setStatsModalAnim({
+          cardTransform: 'translate(0px, 0px) scale(1)',
+          overlayOpacity: 1,
+          transitionEnabled: true,
+        });
+      });
+    });
+
+    return () => {
+      cancelAnimationFrame(outerFrame);
+      if (innerFrame != null) cancelAnimationFrame(innerFrame);
+    };
+  }, [showStats, statsModalClosing]);
+
+  const closeStatsModal = () => {
+    const token = ++statsModalAnimTokenRef.current;
+    const shrunk = computeIconModalShrinkStyle(
+      statsIconRef.current,
+      statsModalCardRef.current
+    );
+
+    setStatsModalClosing(true);
+    setStatsModalAnim({
+      ...shrunk,
+      transitionEnabled: true,
+    });
+    setShowClearStatsButton(false);
+
+    setTimeout(() => {
+      if (token !== statsModalAnimTokenRef.current) return;
+      setShowStats(false);
+      setStatsModalClosing(false);
+      setStatsModalAnim({
+        cardTransform: 'translate(0px, 0px) scale(1)',
+        overlayOpacity: 1,
+        transitionEnabled: false,
+      });
+    }, ICON_MODAL_ANIM_MS);
   };
 
   const handleRulesWizardTouchStart = (e) => {
@@ -1395,7 +1631,7 @@ export default function WordPuzzleGame() {
     if (Math.abs(dx) < minSwipe) return;
     if (Math.abs(dy) > Math.abs(dx) * 1.15) return;
     if (dx < 0) {
-      setRulesWizardStep((s) => Math.min(3, s + 1));
+      setRulesWizardStep((s) => Math.min(2, s + 1));
     } else {
       setRulesWizardStep((s) => Math.max(0, s - 1));
     }
@@ -1521,18 +1757,20 @@ export default function WordPuzzleGame() {
             >
               <FontAwesomeIcon icon={faHouseChimney} className="text-lg" />
             </a>
-            <button 
+            <button
+                    ref={statsIconRef}
                     onClick={() => {
                       setStatsShowGameResultBanner(gameOver);
-                      setShowStats(true);
+                      openStatsModal();
                     }}
               className="text-gray-600 hover:text-gray-800 transition-colors"
               title="Statistics"
             >
               <FontAwesomeIcon icon={faChartSimple} className="text-lg" />
             </button>
-            <button 
-              onClick={() => setShowRules(true)}
+            <button
+              ref={rulesIconRef}
+              onClick={openRulesModal}
               className="text-gray-500 hover:text-gray-700 transition-colors"
               title="Rules"
             >
@@ -1605,16 +1843,17 @@ export default function WordPuzzleGame() {
               <FontAwesomeIcon icon={faHouseChimney} className="text-lg" />
             </a>
             <button
+              ref={statsIconRef}
               onClick={() => {
                 setStatsShowGameResultBanner(false);
-                setShowStats(true);
+                openStatsModal();
               }}
               className="text-gray-600 hover:text-gray-800 transition-colors"
               title="Statistics"
             >
               <FontAwesomeIcon icon={faChartSimple} className="text-lg" />
             </button>
-            <button onClick={() => setShowRules(true)} className="text-gray-500 hover:text-gray-700 transition-colors" title="Rules">
+            <button ref={rulesIconRef} onClick={openRulesModal} className="text-gray-500 hover:text-gray-700 transition-colors" title="Rules">
               <FontAwesomeIcon icon={faCircleQuestion} className="text-xl" />
             </button>
           </div>
@@ -2536,7 +2775,6 @@ export default function WordPuzzleGame() {
                 <PossibleAnswersFromCsv
                   letters={letters}
                   max={4}
-                  ensureIncluded={hintWord}
                   puzzleDate={getLocalDateString()}
                   className="justify-start"
                 />
@@ -2593,8 +2831,30 @@ export default function WordPuzzleGame() {
 
       {/* Statistics Modal */}
       {(showStats || statsModalClosing) && (
-        <div className={`fixed top-0 left-0 right-0 bottom-0 bg-black bg-opacity-50 flex items-center justify-center z-[9999] ${statsModalClosing ? 'modal-fade-out' : 'modal-fade-in'}`} style={{ width: '100vw', height: '100vh', margin: 0, padding: 0 }}>
-          <div className="bg-white rounded-lg p-4 sm:p-6 w-full max-w-xs sm:max-w-sm md:max-w-md mx-4 sm:mx-6 max-h-[85vh] sm:max-h-[90vh] overflow-y-auto">
+        <div
+          className="fixed top-0 left-0 right-0 bottom-0 bg-black bg-opacity-50 flex items-center justify-center z-[9999]"
+          style={{
+            width: '100vw',
+            height: '100vh',
+            margin: 0,
+            padding: 0,
+            opacity: statsModalAnim.overlayOpacity,
+            transition: statsModalAnim.transitionEnabled
+              ? `opacity ${ICON_MODAL_ANIM_MS}ms ease-out`
+              : 'none',
+          }}
+        >
+          <div
+            ref={statsModalCardRef}
+            className="bg-white rounded-lg p-4 sm:p-6 w-full max-w-xs sm:max-w-sm md:max-w-md mx-4 sm:mx-6 max-h-[85vh] sm:max-h-[90vh] overflow-y-auto"
+            style={{
+              transform: statsModalAnim.cardTransform,
+              transformOrigin: 'center center',
+              transition: statsModalAnim.transitionEnabled
+                ? `transform ${ICON_MODAL_ANIM_MS}ms ease-out`
+                : 'none',
+            }}
+          >
                           {/* Header */}
               <div className="flex justify-between items-center mb-2">
                 <h2 className="text-lg font-bold flex items-center gap-2">
@@ -2618,14 +2878,9 @@ export default function WordPuzzleGame() {
                     Clear Stats
                   </button>
                   )}
-                  <button 
+                  <button
                     type="button"
-                    onClick={() => {
-                      setShowClearStatsButton(false);
-                      setStatsModalClosing(true);
-                      setShowStats(false);
-                      setTimeout(() => setStatsModalClosing(false), 200);
-                    }}
+                    onClick={closeStatsModal}
                     className="text-gray-500 hover:text-gray-700 text-lg sm:text-xl font-bold"
                   >
                     ×
@@ -2846,21 +3101,43 @@ export default function WordPuzzleGame() {
         </div>
       )}
 
-      {/* Rules Modal — 4-step wizard */}
+      {/* Rules Modal — 3-step wizard */}
       {(showRules || rulesModalClosing) && (
-        <div className={`fixed top-0 left-0 right-0 bottom-0 bg-black bg-opacity-50 flex items-center justify-center z-[9999] ${rulesModalClosing ? 'modal-fade-out' : 'modal-fade-in'}`} style={{ width: '100vw', height: '100vh', margin: 0, padding: 0 }}>
-          <div className="bg-white rounded-lg w-full max-w-xs sm:max-w-sm md:max-w-md mx-4 sm:mx-6 flex flex-col max-h-[min(90vh,90dvh)] overflow-hidden shadow-xl">
+        <div
+          className="fixed top-0 left-0 right-0 bottom-0 bg-black bg-opacity-50 flex items-center justify-center z-[9999]"
+          style={{
+            width: '100vw',
+            height: '100vh',
+            margin: 0,
+            padding: 0,
+            opacity: rulesModalAnim.overlayOpacity,
+            transition: rulesModalAnim.transitionEnabled
+              ? `opacity ${ICON_MODAL_ANIM_MS}ms ease-out`
+              : 'none',
+          }}
+        >
+          <div
+            ref={rulesModalCardRef}
+            className="bg-white rounded-lg w-full max-w-xs sm:max-w-sm md:max-w-md mx-4 sm:mx-6 flex flex-col max-h-[min(90vh,90dvh)] overflow-hidden shadow-xl"
+            style={{
+              transform: rulesModalAnim.cardTransform,
+              transformOrigin: 'center center',
+              transition: rulesModalAnim.transitionEnabled
+                ? `transform ${ICON_MODAL_ANIM_MS}ms ease-out`
+                : 'none',
+            }}
+          >
             {/* Sticky header — close (×) on final step only */}
             <div className="flex items-center justify-between flex-shrink-0 p-4 sm:p-6 pb-3 border-b border-gray-200 bg-white z-10 gap-2">
               <h2 className="text-lg font-bold text-left flex items-center gap-2 flex-1 min-w-0">
-                <FontAwesomeIcon icon={faCircleQuestion} className="text-gray-600" />
+                <FontAwesomeIcon icon={faCircleQuestion} className="text-gray-600 flex-shrink-0" />
                 How to Play
               </h2>
-              {rulesWizardStep === 3 && (
+              {rulesWizardStep === 2 && (
               <button 
                   type="button"
                   onClick={closeRulesModal}
-                  className="flex-shrink-0 text-gray-500 hover:text-gray-700 text-lg sm:text-xl font-bold p-1 -mr-1 -mt-1"
+                  className="flex-shrink-0 text-gray-500 hover:text-gray-700 text-lg sm:text-xl font-bold leading-none p-1 -mr-1"
                   aria-label="Close"
               >
                 ×
@@ -2876,23 +3153,15 @@ export default function WordPuzzleGame() {
             >
               <div
                 key={rulesWizardStep}
-                className={`px-4 sm:px-6 py-4 rules-wizard-slide-${rulesWizardSlideDir}`}
+                className={`px-4 sm:px-6 py-4 rules-wizard-slide-${rulesWizardSlideDir} text-base text-gray-800 leading-relaxed`}
               >
               {rulesWizardStep === 0 && (
                 <div>
-                  <p className="text-center text-base font-medium text-gray-800 leading-snug mb-4">
-                    Create words using 3 provided letters:
-                  </p>
                   <RulesWizardLinShapes />
-                </div>
-              )}
-              {rulesWizardStep === 1 && (
-                <div>
-                  <RulesWizardLinShapes />
-                  <ul className="list-none space-y-2 pl-0 text-sm text-gray-800 leading-relaxed">
+                  <ul className="list-none space-y-4 pl-0">
                     <li className="flex gap-2 items-start">
-                      <span className="flex-shrink-0 select-none leading-snug" aria-hidden>💯</span>
-                      <span>Use all provided letters</span>
+                      <span className="flex-shrink-0 select-none leading-snug" aria-hidden>🧠</span>
+                      <span>Create words using 3 provided letters</span>
                     </li>
                     <li className="flex gap-2 items-start">
                       <span className="flex-shrink-0 select-none leading-snug" aria-hidden>🔤</span>
@@ -2900,60 +3169,48 @@ export default function WordPuzzleGame() {
                     </li>
                     <li className="flex gap-2 items-start">
                       <span className="flex-shrink-0 select-none leading-snug" aria-hidden>🤹</span>
-                      <span>You can add extra letters before, after, or between them</span>
+                      <span>Add extra letters before, after, or between</span>
                     </li>
-            </ul>
-              </div>
+                  </ul>
+                </div>
               )}
-              {rulesWizardStep === 2 && (
+              {rulesWizardStep === 1 && (
                 <div>
                   <RulesWizardLinShapes />
-                  <div className="mb-1 text-xs font-medium text-gray-600">Example guesses</div>
-                  {/* PLACING */}
-                  <div className="flex flex-wrap items-center gap-x-1 gap-y-1 mb-1">
-              <span>P</span>
-              <div style={{ width: 24, height: 24, background: '#c85f31', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '0.95rem', boxShadow: '0 1px 3px rgba(0,0,0,0.10)' }}>L</div>
-              <span>A</span>
+                  <div className="mb-2 text-sm text-gray-500 italic">Example guesses</div>
+                  <RulesExampleGuess valid label="Valid">
+                    <span>P</span>
+                    <div style={{ width: 24, height: 24, background: '#c85f31', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '0.95rem', boxShadow: '0 1px 3px rgba(0,0,0,0.10)' }}>L</div>
+                    <span>A</span>
                     <span>C</span>
-              <div style={{ width: 24, height: 24, background: '#195b7c', borderRadius: 6, transform: 'rotate(45deg) scale(0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '0.95rem', boxShadow: '0 1px 3px rgba(0,0,0,0.10)' }}>
-                <span style={{ transform: 'rotate(-45deg) scale(1.176)', display: 'inline-block', width: '100%', textAlign: 'center' }}>I</span>
-              </div>
-              <div style={{ width: 24, height: 24, background: '#1c6d2a', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '0.95rem', boxShadow: '0 1px 3px rgba(0,0,0,0.10)' }}>N</div>
+                    <div style={{ width: 24, height: 24, background: '#195b7c', borderRadius: 6, transform: 'rotate(45deg) scale(0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '0.95rem', boxShadow: '0 1px 3px rgba(0,0,0,0.10)' }}>
+                      <span style={{ transform: 'rotate(-45deg) scale(1.176)', display: 'inline-block', width: '100%', textAlign: 'center' }}>I</span>
+                    </div>
+                    <div style={{ width: 24, height: 24, background: '#1c6d2a', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '0.95rem', boxShadow: '0 1px 3px rgba(0,0,0,0.10)' }}>N</div>
                     <span>G</span>
-            </div>
-                  <div className="flex items-start mb-3 text-xs" style={{ color: '#1c6d2a' }}>
-                    <FontAwesomeIcon icon={faCheckCircle} className="mr-1 mt-0.5 flex-shrink-0" /> Valid guess—letters between provided letters
-            </div>
-                  {/* LINKS */}
-                  <div className="flex flex-wrap items-center gap-x-1 gap-y-1 mb-1">
-              <div style={{ width: 24, height: 24, background: '#c85f31', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '0.95rem', boxShadow: '0 1px 3px rgba(0,0,0,0.10)' }}>L</div>
-              <div style={{ width: 24, height: 24, background: '#195b7c', borderRadius: 6, transform: 'rotate(45deg) scale(0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '0.95rem', boxShadow: '0 1px 3px rgba(0,0,0,0.10)' }}>
-                <span style={{ transform: 'rotate(-45deg) scale(1.176)', display: 'inline-block', width: '100%', textAlign: 'center' }}>I</span>
-              </div>
-              <div style={{ width: 24, height: 24, background: '#1c6d2a', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '0.95rem', boxShadow: '0 1px 3px rgba(0,0,0,0.10)' }}>N</div>
-              <span>K</span>
+                  </RulesExampleGuess>
+                  <RulesExampleGuess valid={false} label="Invalid (provided letters not in order)">
+                    <div style={{ width: 24, height: 24, background: '#1c6d2a', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '0.95rem', boxShadow: '0 1px 3px rgba(0,0,0,0.10)' }}>N</div>
+                    <span>A</span>
+                    <div style={{ width: 24, height: 24, background: '#195b7c', borderRadius: 6, transform: 'rotate(45deg) scale(0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '0.95rem', boxShadow: '0 1px 3px rgba(0,0,0,0.10)' }}>
+                      <span style={{ transform: 'rotate(-45deg) scale(1.176)', display: 'inline-block', width: '100%', textAlign: 'center' }}>I</span>
+                    </div>
+                    <div style={{ width: 24, height: 24, background: '#c85f31', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '0.95rem', boxShadow: '0 1px 3px rgba(0,0,0,0.10)' }}>L</div>
                     <span>S</span>
-            </div>
-                  <div className="flex items-start mb-3 text-xs" style={{ color: '#1c6d2a' }}>
-                    <FontAwesomeIcon icon={faCheckCircle} className="mr-1 mt-0.5 flex-shrink-0" /> Valid guess—consecutive provided letters
-            </div>
-                  {/* NAILS invalid */}
-                  <div className="flex flex-wrap items-center gap-x-1 gap-y-1 mb-1">
-              <div style={{ width: 24, height: 24, background: '#1c6d2a', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '0.95rem', boxShadow: '0 1px 3px rgba(0,0,0,0.10)' }}>N</div>
-              <span>A</span>
-              <div style={{ width: 24, height: 24, background: '#195b7c', borderRadius: 6, transform: 'rotate(45deg) scale(0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '0.95rem', boxShadow: '0 1px 3px rgba(0,0,0,0.10)' }}>
-                <span style={{ transform: 'rotate(-45deg) scale(1.176)', display: 'inline-block', width: '100%', textAlign: 'center' }}>I</span>
-              </div>
-              <div style={{ width: 24, height: 24, background: '#c85f31', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '0.95rem', boxShadow: '0 1px 3px rgba(0,0,0,0.10)' }}>L</div>
+                  </RulesExampleGuess>
+                  <RulesExampleGuess valid label="Valid">
+                    <div style={{ width: 24, height: 24, background: '#c85f31', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '0.95rem', boxShadow: '0 1px 3px rgba(0,0,0,0.10)' }}>L</div>
+                    <div style={{ width: 24, height: 24, background: '#195b7c', borderRadius: 6, transform: 'rotate(45deg) scale(0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '0.95rem', boxShadow: '0 1px 3px rgba(0,0,0,0.10)' }}>
+                      <span style={{ transform: 'rotate(-45deg) scale(1.176)', display: 'inline-block', width: '100%', textAlign: 'center' }}>I</span>
+                    </div>
+                    <div style={{ width: 24, height: 24, background: '#1c6d2a', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: '0.95rem', boxShadow: '0 1px 3px rgba(0,0,0,0.10)' }}>N</div>
+                    <span>K</span>
                     <span>S</span>
-            </div>
-                  <div className="flex items-start text-xs" style={{ color: '#992108' }}>
-                    <FontAwesomeIcon icon={faTimesCircle} className="mr-1 mt-0.5 flex-shrink-0" /> Invalid guess—provided letters not in order
-            </div>
-          </div>
+                  </RulesExampleGuess>
+                </div>
               )}
-              {rulesWizardStep === 3 && (
-                <ul className="list-none space-y-4 pl-0 text-base text-gray-800 leading-relaxed">
+              {rulesWizardStep === 2 && (
+                <ul className="list-none space-y-4 pl-0">
                   <li className="flex gap-2 items-start">
                     <span className="flex-shrink-0 select-none leading-snug" aria-hidden>🔮</span>
                     <span>{GUESSES_PER_DAY} guesses per game</span>
@@ -2977,13 +3234,13 @@ export default function WordPuzzleGame() {
             {/* Progress dots + step actions */}
             <div className="flex-shrink-0 border-t border-gray-200 bg-white">
               <div className="flex justify-center items-center gap-2 py-3 px-4" role="tablist" aria-label="How to play steps">
-                {[0, 1, 2, 3].map((i) => (
+                {[0, 1, 2].map((i) => (
                   <button
                     key={i}
                     type="button"
                     role="tab"
                     aria-selected={rulesWizardStep === i}
-                    aria-label={`Step ${i + 1} of 4`}
+                    aria-label={`Step ${i + 1} of 3`}
                     onClick={() => setRulesWizardStep(i)}
                     className={`rounded-full transition-all focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-gray-400 ${
                       rulesWizardStep === i ? 'w-2.5 h-2.5 bg-gray-800' : 'w-2 h-2 bg-gray-300 hover:bg-gray-400'
@@ -2991,48 +3248,45 @@ export default function WordPuzzleGame() {
                   />
                 ))}
               </div>
-              {rulesWizardStep < 3 && (
-                <div className="flex justify-between gap-3 px-4 pb-4">
+              <div className="flex justify-between gap-3 px-4 pb-4">
+                <button
+                  type="button"
+                  onClick={() => setRulesWizardStep((s) => Math.max(0, s - 1))}
+                  disabled={rulesWizardStep === 0}
+                  className="px-4 py-2 rounded-lg border border-gray-300 text-sm font-medium text-gray-700 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-50"
+                >
+                  Back
+                </button>
+                {rulesWizardStep < 2 ? (
                   <button
                     type="button"
-                    onClick={() => setRulesWizardStep((s) => Math.max(0, s - 1))}
-                    disabled={rulesWizardStep === 0}
-                    className="px-4 py-2 rounded-lg border border-gray-300 text-sm font-medium text-gray-700 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-50"
-                  >
-                    Back
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setRulesWizardStep((s) => Math.min(3, s + 1))}
+                    onClick={() => setRulesWizardStep((s) => Math.min(2, s + 1))}
                     className="px-4 py-2 rounded-lg bg-gray-900 text-white text-sm font-medium hover:bg-gray-800"
                   >
                     Next
                   </button>
-        </div>
-      )}
-              {rulesWizardStep === 3 && (
-                <>
-                  <div className="px-4 pb-2">
-                    <button
-                      type="button"
-                      onClick={closeRulesModal}
-                      className="w-full bg-white border border-gray-400 text-black py-3 rounded-lg text-lg font-semibold hover:bg-gray-50"
-                    >
-                      Let&apos;s Go!
-                    </button>
-                  </div>
-                  <div className="border-t border-gray-200 p-4 sm:p-6 pt-3 bg-gray-50/80">
-                    <label className="flex items-center gap-2 cursor-pointer text-sm text-gray-700">
-                      <input
-                        type="checkbox"
-                        checked={showRulesOnStart}
-                        onChange={toggleShowRulesOnStart}
-                        className="w-4 h-4 rounded border-gray-300"
-                      />
-                      Show Rules on Game Start
-                    </label>
-                  </div>
-                </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={closeRulesModal}
+                    className="px-5 py-2.5 rounded-lg bg-gray-900 text-white text-base font-medium hover:bg-gray-800"
+                  >
+                    Let&apos;s Go!
+                  </button>
+                )}
+              </div>
+              {rulesWizardStep === 2 && (
+                <div className="border-t border-gray-200 p-4 sm:p-6 pt-3 bg-gray-50/80">
+                  <label className="flex items-center gap-2 cursor-pointer text-sm text-gray-700">
+                    <input
+                      type="checkbox"
+                      checked={showRulesOnStart}
+                      onChange={toggleShowRulesOnStart}
+                      className="w-4 h-4 rounded border-gray-300"
+                    />
+                    Show Rules on Game Start
+                  </label>
+                </div>
               )}
             </div>
           </div>
