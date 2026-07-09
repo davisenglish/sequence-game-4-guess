@@ -142,6 +142,23 @@ function coerceMistakesBuckets(m) {
   return base;
 }
 
+const SCORE_DISTRIBUTION_TIERS = [
+  { emoji: '👑', label: '≥ 40' },
+  { emoji: '',   label: '30–39' },
+  { emoji: '',   label: '20–29' },
+  { emoji: '',   label: '10–19' },
+  { emoji: '🐌', label: '1–10' },
+];
+
+function bucketIndexForScore(score) {
+  const s = Math.max(0, Math.floor(Number(score) || 0));
+  if (s >= 40) return 0;
+  if (s >= 30) return 1;
+  if (s >= 20) return 2;
+  if (s >= 10) return 3;
+  return 4;
+}
+
 /** Last win was today or yesterday — streak can still extend with a win today. */
 function isDailyStreakCalendarActive(lastWinPuzzleDate, todayStr) {
   if (!lastWinPuzzleDate) return false;
@@ -149,12 +166,12 @@ function isDailyStreakCalendarActive(lastWinPuzzleDate, todayStr) {
   return isLocalYmdImmediatelyBefore(lastWinPuzzleDate, todayStr);
 }
 
-/** Top unique scores, highest first, max 5 (no duplicate values). */
+/** Top unique scores, highest first, max 3 (no duplicate values). */
 function normalizeHighestScoresList(arr) {
   if (!Array.isArray(arr) || arr.length === 0) return [];
   return [...new Set(arr.map((n) => Number(n)).filter((n) => Number.isFinite(n) && n > 0))]
     .sort((a, b) => b - a)
-    .slice(0, 5);
+    .slice(0, 3);
 }
 
 /**
@@ -165,6 +182,12 @@ function normalizeStatsStreak(raw) {
   const s = { ...raw };
   s.mistakes = coerceMistakesBuckets(s.mistakes);
   s.highestScores = normalizeHighestScoresList(s.highestScores || []);
+  if (!Array.isArray(s.winScores)) s.winScores = [];
+  if (!Array.isArray(s.scoreDistribution) || s.scoreDistribution.length !== 5) {
+    s.scoreDistribution = [0, 0, 0, 0, 0];
+  } else {
+    s.scoreDistribution = s.scoreDistribution.map((n) => Math.max(0, Math.floor(Number(n) || 0)));
+  }
   const last = s.lastWinPuzzleDate;
   if (!last) {
     if ((s.currentStreak || 0) > 0) s.currentStreak = 0;
@@ -281,24 +304,138 @@ function isSequential(word, letters) {
   return false;
 }
 
+/** Profanity blocklist — whole-word match only; all entries are 5+ letters. */
+const SWEAR_WORDS = new Set([
+  'arsehole',
+  'assbandit',
+  'assclown',
+  'assface',
+  'asshat',
+  'asshole',
+  'assholes',
+  'asswipe',
+  'badass',
+  'bastard',
+  'bastards',
+  'beaner',
+  'beaners',
+  'bitch',
+  'bitches',
+  'bitching',
+  'bitchy',
+  'bitchass',
+  'bollocks',
+  'bullshit',
+  'chink',
+  'chinks',
+  'clusterfuck',
+  'cockbite',
+  'cockhead',
+  'cocksucker',
+  'cocksmoker',
+  'cumdump',
+  'cumguzzler',
+  'cumshot',
+  'cuntface',
+  'cunthole',
+  'damnit',
+  'dickbag',
+  'dickface',
+  'dickhead',
+  'dickwad',
+  'dickweed',
+  'dickweasel',
+  'dipshit',
+  'douche',
+  'douchebag',
+  'douchebags',
+  'dumbass',
+  'dumbasses',
+  'faggot',
+  'faggots',
+  'fuckboy',
+  'fucked',
+  'fucker',
+  'fuckers',
+  'fucking',
+  'fuckface',
+  'fuckhead',
+  'fuckoff',
+  'fuckstick',
+  'fucktard',
+  'fuckwad',
+  'fuckwit',
+  'goddam',
+  'goddammit',
+  'goddamn',
+  'goddamned',
+  'gooks',
+  'honkey',
+  'honky',
+  'horseshit',
+  'jackass',
+  'jackasses',
+  'jackoff',
+  'jerkoff',
+  'knobjockey',
+  'motherfucker',
+  'motherfuckers',
+  'motherfucking',
+  'nigga',
+  'niggas',
+  'nigger',
+  'niggers',
+  'pissant',
+  'pissed',
+  'pisser',
+  'pissing',
+  'pisshead',
+  'pussies',
+  'pussy',
+  'raghead',
+  'shitbag',
+  'shitbox',
+  'shitface',
+  'shithead',
+  'shitkicker',
+  'shitless',
+  'shitting',
+  'shitstorm',
+  'shitty',
+  'skank',
+  'skanks',
+  'skanky',
+  'sluts',
+  'slutty',
+  'smartass',
+  'spics',
+  'titfuck',
+  'titty',
+  'tranny',
+  'twats',
+  'wanker',
+  'wankers',
+  'wetback',
+  'wetbacks',
+  'whore',
+  'whores',
+  'whoring',
+  'whorehouse',
+]);
+
+function isSwearWord(word) {
+  const lower = String(word || '').trim().toLowerCase();
+  return lower.length >= 5 && SWEAR_WORDS.has(lower);
+}
+
 async function isValidWord(word) {
   // Reject hyphenated words
   if (word.includes('-')) return false;
-  
-  // Reject swear words and inappropriate content
-  const swearWords = [
-    'fuck', 'shit', 'bitch', 'ass', 'damn', 'hell', 'crap', 'piss', 'cock', 'dick', 'pussy', 'cunt',
-    'fucking', 'shitting', 'bitching', 'asshole', 'damned', 'hellish', 'crappy', 'pissing',
-    'fucker', 'shitty', 'bitchy', 'asshat', 'damnit', 'hellfire', 'crapper', 'pisser',
-    'motherfucker', 'bullshit', 'horseshit', 'dumbass', 'jackass', 'smartass', 'badass',
-    'fuckin', 'shitty', 'bitchin', 'asswipe', 'damnit', 'hellish', 'crappy', 'pissy'
-  ];
-  
-  const lowerWord = word.toLowerCase();
-  if (swearWords.includes(lowerWord)) return false;
+
+  if (isSwearWord(word)) return false;
 
   const wordSet = await loadWordList();
-  return wordSet.has(lowerWord);
+  return wordSet.has(String(word || '').trim().toLowerCase());
 }
 
 // Helper to find 1-2 possible valid words for a given sequence
@@ -529,7 +666,9 @@ export default function WordPuzzleGame() {
     maxStreak: 0,
     highestScores: [],
     mistakes: Array.from({ length: GUESSES_PER_DAY + 1 }, () => 0), // games by invalid-count 0..GUESSES_PER_DAY
-    longestWords: [] // Array of {word, length} objects, sorted by length descending
+    longestWords: [], // Array of {word, length} objects, sorted by length descending, one per length, max 3
+    winScores: [], // Scores from won games (≥1 valid word), for average trend
+    scoreDistribution: [0, 0, 0, 0, 0] // Counts per score tier: [40+, 30-39, 20-29, 10-19, 1-10]
   });
   const [showRules, setShowRules] = useState(false);
   const [rulesModalClosing, setRulesModalClosing] = useState(false);
@@ -1045,6 +1184,13 @@ export default function WordPuzzleGame() {
       setGuessesRemaining(prev => prev - 1);
       return; 
     }
+    if (isSwearWord(word)) {
+      setError(true);
+      setErrorMessage('Cuss words do not count');
+      setInput('');
+      inputValueRef.current = '';
+      return;
+    }
     if (!(await isValidWord(word))) { 
       setError(true); 
         setErrorMessage('Word not found in list');
@@ -1097,6 +1243,10 @@ export default function WordPuzzleGame() {
     tempStats.highestScores = tempStats.highestScores || [];
     tempStats.mistakes = coerceMistakesBuckets(tempStats.mistakes);
     tempStats.longestWords = tempStats.longestWords || [];
+    tempStats.winScores = Array.isArray(tempStats.winScores) ? tempStats.winScores : [];
+    if (!Array.isArray(tempStats.scoreDistribution) || tempStats.scoreDistribution.length !== 5) {
+      tempStats.scoreDistribution = [0, 0, 0, 0, 0];
+    }
     
     // Update games played (any round counts)
     tempStats.gamesPlayed += 1;
@@ -1116,9 +1266,23 @@ export default function WordPuzzleGame() {
       tempStats.currentStreak = 0;
     }
     
-    // Update highest scores (unique values only)
+    // Update highest scores (unique values only, max 3)
     if (score > 0) {
       tempStats.highestScores = normalizeHighestScoresList([...tempStats.highestScores, score]);
+    }
+
+    // Track win scores for average trend (only won games)
+    if (hasWon && score > 0) {
+      tempStats.winScores = [...tempStats.winScores, score];
+    }
+
+    // Bucket score into score distribution (only positive scores)
+    if (score > 0) {
+      const bIdx = bucketIndexForScore(score);
+      tempStats.scoreDistribution[bIdx] = (tempStats.scoreDistribution[bIdx] || 0) + 1;
+      localStorage.setItem('currentRoundScoreBucket_v2_4guess', String(bIdx));
+    } else {
+      localStorage.removeItem('currentRoundScoreBucket_v2_4guess');
     }
     
     // Update mistakes count (including unused guesses from early game ending)
@@ -1130,26 +1294,18 @@ export default function WordPuzzleGame() {
     // Store the current round's mistake count for highlighting
     localStorage.setItem('currentRoundMistakes_v2_4guess', invalidCount.toString());
     
-    // Update longest words
+    // Update longest words — one entry per word length (newest wins), max 3
     const validWordsThisRound = newValidWords.filter(word => word.isValid);
     validWordsThisRound.forEach(({word, length}) => {
-      // Check if this exact word already exists to avoid duplicates
-      const wordExists = tempStats.longestWords.some(item => item.word === word);
-      if (!wordExists) {
-        // Add the new word
+      const existingIdx = tempStats.longestWords.findIndex(item => item.length === length);
+      if (existingIdx !== -1) {
+        tempStats.longestWords[existingIdx] = { word, length };
+      } else {
         tempStats.longestWords.push({ word, length });
       }
     });
-    
-    // Sort by length descending, then by recency (newer words first for same length)
-    tempStats.longestWords.sort((a, b) => {
-      if (b.length !== a.length) {
-        return b.length - a.length; // Sort by length first
-      }
-      // For same length, newer words (added later) should appear first
-      return -1;
-    });
-    tempStats.longestWords = tempStats.longestWords.slice(0, 5);
+    tempStats.longestWords.sort((a, b) => b.length - a.length);
+    tempStats.longestWords = tempStats.longestWords.slice(0, 4);
     
     // Store the current round's score for highlighting
     localStorage.setItem('currentRoundScore_v2_4guess', score.toString());
@@ -1215,6 +1371,10 @@ export default function WordPuzzleGame() {
     newStats.highestScores = newStats.highestScores || [];
     newStats.mistakes = coerceMistakesBuckets(newStats.mistakes);
     newStats.longestWords = newStats.longestWords || [];
+    newStats.winScores = Array.isArray(newStats.winScores) ? newStats.winScores : [];
+    if (!Array.isArray(newStats.scoreDistribution) || newStats.scoreDistribution.length !== 5) {
+      newStats.scoreDistribution = [0, 0, 0, 0, 0];
+    }
     
     // Only update top statistics if this is a natural game completion (not manually ended)
     if (!manuallyEnded) {
@@ -1234,12 +1394,26 @@ export default function WordPuzzleGame() {
       } else {
         newStats.currentStreak = 0;
       }
+
+      // Track win scores for average trend (only won games)
+      if (hasWon && score > 0) {
+        newStats.winScores = [...newStats.winScores, score];
+      }
     }
     
     // Always update performance stats
-    // Update highest scores (unique values only)
+    // Update highest scores (unique values only, max 3)
     if (score > 0) {
       newStats.highestScores = normalizeHighestScoresList([...newStats.highestScores, score]);
+    }
+
+    // Bucket score into score distribution (only positive scores)
+    if (score > 0) {
+      const bIdx = bucketIndexForScore(score);
+      newStats.scoreDistribution[bIdx] = (newStats.scoreDistribution[bIdx] || 0) + 1;
+      localStorage.setItem('currentRoundScoreBucket_v2_4guess', String(bIdx));
+    } else {
+      localStorage.removeItem('currentRoundScoreBucket_v2_4guess');
     }
     
     // Update mistakes count
@@ -1251,26 +1425,18 @@ export default function WordPuzzleGame() {
     // Store the current round's mistake count for highlighting
     localStorage.setItem('currentRoundMistakes_v2_4guess', invalidCount.toString());
     
-    // Update longest words
+    // Update longest words — one entry per word length (newest wins), max 3
     const validWordsThisRound = validWords.filter(word => word.isValid);
     validWordsThisRound.forEach(({word, length}) => {
-      // Check if this exact word already exists to avoid duplicates
-      const wordExists = newStats.longestWords.some(item => item.word === word);
-      if (!wordExists) {
-        // Add the new word
+      const existingIdx = newStats.longestWords.findIndex(item => item.length === length);
+      if (existingIdx !== -1) {
+        newStats.longestWords[existingIdx] = { word, length };
+      } else {
         newStats.longestWords.push({ word, length });
       }
     });
-    
-    // Sort by length descending, then by recency (newer words first for same length)
-    newStats.longestWords.sort((a, b) => {
-      if (b.length !== a.length) {
-        return b.length - a.length; // Sort by length first
-      }
-      // For same length, newer words (added later) should appear first
-      return -1;
-    });
-    newStats.longestWords = newStats.longestWords.slice(0, 5);
+    newStats.longestWords.sort((a, b) => b.length - a.length);
+    newStats.longestWords = newStats.longestWords.slice(0, 4);
     
     // Store the current round's score for highlighting
     localStorage.setItem('currentRoundScore_v2_4guess', score.toString());
@@ -1451,7 +1617,9 @@ export default function WordPuzzleGame() {
       maxStreak: 0,
       highestScores: [],
       mistakes: Array.from({ length: GUESSES_PER_DAY + 1 }, () => 0),
-      longestWords: []
+      longestWords: [],
+      winScores: [],
+      scoreDistribution: [0, 0, 0, 0, 0],
     });
   };
 
@@ -1893,7 +2061,7 @@ export default function WordPuzzleGame() {
               boxShadow: '0 4px 16px rgba(0, 0, 0, 0.2)'
             };
             return (
-              <div key={idx} style={style} className="hover:scale-105 transition-transform duration-200 relative">
+              <div key={idx} style={style} className="relative">
                 {shape === 'diamond' ? (
                   <span style={{
                     position: 'absolute',
@@ -2269,13 +2437,34 @@ export default function WordPuzzleGame() {
         const popupGap = 4;
         const keyBg = '#e5e7eb';
         const triUpper = (letters && String(letters).toUpperCase()) || '';
-        const mobileProvidedLetterBg = {};
+        // Build a map of letter → array of position colors (in order), allowing duplicates
+        const mobileProvidedLetterColors = {};
         for (let i = 0; i < Math.min(3, triUpper.length); i++) {
           const c = triUpper[i];
-          if (c && mobileProvidedLetterBg[c] === undefined) {
-            mobileProvidedLetterBg[c] = shapes[i].color;
+          if (c) {
+            if (!mobileProvidedLetterColors[c]) mobileProvidedLetterColors[c] = [];
+            mobileProvidedLetterColors[c].push(shapes[i].color);
           }
         }
+        // Returns a CSS `background` value: solid color for 1, hard-stop gradient for 2–3
+        const buildKeyGradient = (colors) => {
+          if (!colors || colors.length === 0) return null;
+          if (colors.length === 1) return colors[0];
+          const n = colors.length;
+          const stops = [];
+          colors.forEach((c, i) => {
+            const startPct = (i / n * 100).toFixed(4) + '%';
+            const endPct = ((i + 1) / n * 100).toFixed(4) + '%';
+            if (i === 0) {
+              stops.push(`${c} ${endPct}`);
+            } else if (i === n - 1) {
+              stops.push(`${c} ${startPct}`);
+            } else {
+              stops.push(`${c} ${startPct}`, `${c} ${endPct}`);
+            }
+          });
+          return `linear-gradient(to right, ${stops.join(', ')})`;
+        };
         const findNearestIndexByCenters = (x, widths, gap) => {
           let cursor = 0;
           let bestIndex = 0;
@@ -2397,8 +2586,9 @@ export default function WordPuzzleGame() {
             {/* Top row: Q-P */}
             <div className="flex justify-center relative flex-nowrap" style={{ gap: gapPx, marginBottom: rowGapPx }} onPointerDown={handleTopRowBackgroundPointerDown} onPointerUp={handleTopRowPointerUpOrCancel} onPointerCancel={handleTopRowPointerUpOrCancel}>
               {['Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P'].map((letter) => {
-                const provBg = mobileProvidedLetterBg[letter];
-                const popBg = provBg || keyBg;
+                const provColors = mobileProvidedLetterColors[letter];
+                const provBg = buildKeyGradient(provColors);
+                const popBg = (provColors && provColors[0]) || keyBg;
                 const popFg = provBg ? '#ffffff' : '#1f2937';
                 return (
                 <div key={letter} style={{ position: 'relative', width: letterW, height: letterH, flexShrink: 0, overflow: 'visible' }}>
@@ -2432,7 +2622,7 @@ export default function WordPuzzleGame() {
                       position: 'relative',
                       zIndex: 2,
                       pointerEvents: 'auto',
-                      ...(provBg ? { backgroundColor: provBg } : {}),
+                      ...(provBg ? { background: provBg } : {}),
                     }}
                   >
                     {pressedKey === letter ? '' : letter}
@@ -2450,8 +2640,9 @@ export default function WordPuzzleGame() {
             {/* Middle row: A-L */}
             <div className="flex justify-center relative flex-nowrap" style={{ gap: gapPx, marginBottom: rowGapPx }} onPointerDown={handleMiddleRowBackgroundPointerDown} onPointerUp={handleMiddleRowPointerUpOrCancel} onPointerCancel={handleMiddleRowPointerUpOrCancel}>
               {['A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L'].map((letter) => {
-                const provBg = mobileProvidedLetterBg[letter];
-                const popBg = provBg || keyBg;
+                const provColors = mobileProvidedLetterColors[letter];
+                const provBg = buildKeyGradient(provColors);
+                const popBg = (provColors && provColors[0]) || keyBg;
                 const popFg = provBg ? '#ffffff' : '#1f2937';
                 return (
                 <div key={letter} style={{ position: 'relative', width: letterW, height: letterH, flexShrink: 0, overflow: 'visible' }}>
@@ -2485,7 +2676,7 @@ export default function WordPuzzleGame() {
                       position: 'relative',
                       zIndex: 2,
                       pointerEvents: 'auto',
-                      ...(provBg ? { backgroundColor: provBg } : {}),
+                      ...(provBg ? { background: provBg } : {}),
                     }}
                   >
                     {pressedKey === letter ? '' : letter}
@@ -2546,8 +2737,9 @@ export default function WordPuzzleGame() {
                 </button>
               </div>
               {['Z', 'X', 'C', 'V', 'B', 'N', 'M'].map((letter) => {
-                const provBg = mobileProvidedLetterBg[letter];
-                const popBg = provBg || keyBg;
+                const provColors = mobileProvidedLetterColors[letter];
+                const provBg = buildKeyGradient(provColors);
+                const popBg = (provColors && provColors[0]) || keyBg;
                 const popFg = provBg ? '#ffffff' : '#1f2937';
                 return (
                 <div key={letter} style={{ position: 'relative', width: letterW, height: letterH, flexShrink: 0, overflow: 'visible' }}>
@@ -2581,7 +2773,7 @@ export default function WordPuzzleGame() {
                       position: 'relative',
                       zIndex: 2,
                       pointerEvents: 'auto',
-                      ...(provBg ? { backgroundColor: provBg } : {}),
+                      ...(provBg ? { background: provBg } : {}),
                     }}
                   >
                     {pressedKey === letter ? '' : letter}
@@ -2706,7 +2898,7 @@ export default function WordPuzzleGame() {
                   boxShadow: '0 4px 16px rgba(0, 0, 0, 0.2)'
                 };
                 return (
-                  <div key={idx} style={style} className="hover:scale-105 transition-transform duration-200 relative">
+                  <div key={idx} style={style} className="relative">
                     {shape === 'diamond' ? (
                       <span style={{
                         position: 'absolute',
@@ -2920,6 +3112,14 @@ export default function WordPuzzleGame() {
                   localStorage.getItem('currentRoundScore_v2_4guess') || '0',
                   10
                 );
+                const winScores = Array.isArray(stats.winScores) ? stats.winScores : [];
+                const showTrend = correctCount > 0 && winScores.length >= 2;
+                const prevScores = winScores.slice(0, -1);
+                const avgScore = showTrend
+                  ? Math.round(prevScores.reduce((s, n) => s + n, 0) / prevScores.length)
+                  : 0;
+                const scoreDiff = showTrend ? Math.abs(roundScore - avgScore) : 0;
+                const scoreHigher = showTrend ? roundScore >= avgScore : false;
                 return (
                   <div className="text-center mb-4 p-4 bg-gray-50 rounded-lg">
                     <div className={`flex flex-wrap justify-center items-center gap-2 ${className}`}>
@@ -2927,12 +3127,20 @@ export default function WordPuzzleGame() {
                       <span>{message}</span>
                       <span className="text-xl leading-none" aria-hidden>{rightEmoji}</span>
                     </div>
-                    <p className="mt-2 text-sm text-center">
+                    <p className="mt-2 text-base font-semibold text-center mb-1">
                       <span className="text-gray-600">Final Score:</span>{' '}
-                      <span className="font-semibold tabular-nums" style={{ color: '#1c6d2a' }}>
+                      <span className="tabular-nums" style={{ color: '#1c6d2a' }}>
                         {Number.isFinite(roundScore) ? roundScore : 0}
                       </span>
                     </p>
+                    {showTrend && (
+                      <p className="text-sm text-center text-gray-600">
+                        <span className="font-medium">
+                          {scoreDiff} {scoreHigher ? 'higher' : 'lower'}
+                        </span>{' '}
+                        than average
+                      </p>
+                    )}
                   </div>
                 );
               })()}
@@ -2941,126 +3149,107 @@ export default function WordPuzzleGame() {
             <div className="grid grid-cols-4 gap-2 mb-3">
               <div className="text-center">
                 <div className="text-xl sm:text-2xl font-bold">{stats.gamesPlayed}</div>
-                <div className="text-xs text-gray-600">Games Played</div>
+                <div className="text-xs text-gray-600 leading-tight">
+                  <span className="block">Games Played</span>
+                </div>
               </div>
               <div className="text-center">
                 <div className="text-xl sm:text-2xl font-bold">
-                  {(stats.mistakes && stats.mistakes[0]) || 0}
+                  {stats.gamesPlayed > 0 ? Math.round((stats.gamesWon / stats.gamesPlayed) * 100) : 0}
                 </div>
-                <div className="text-xs text-gray-600">Perfect Games</div>
+                <div className="text-xs text-gray-600">Win %</div>
               </div>
               <div className="text-center">
                 <div className="text-xl sm:text-2xl font-bold">{stats.currentStreak}</div>
-                <div className="text-xs text-gray-600">Streak</div>
+                <div className="text-xs text-gray-600 leading-tight">
+                  <span className="block">Current</span>
+                  <span className="block">Streak</span>
+                </div>
               </div>
               <div className="text-center">
                 <div className="text-xl sm:text-2xl font-bold">{stats.maxStreak || 0}</div>
-                <div className="text-xs text-gray-600">Max Streak</div>
+                <div className="text-xs text-gray-600 leading-tight">
+                  <span className="block">Max</span>
+                  <span className="block">Streak</span>
+                </div>
               </div>
             </div>
             
-            {/* Answer Distribution — primary (full width, same prominence as former High Scores block) */}
-            <div className="mb-3">
-              <h3 className="text-sm font-semibold mb-1 flex justify-center items-center gap-1.5">
-                <span className="text-base leading-none" aria-hidden>🧠</span>
-                Answer Distribution
+            {/* Score Distribution */}
+            <div className="mb-3 sm:mb-6">
+              <h3 className="text-sm font-semibold mb-2 flex justify-center items-center gap-1.5">
+                Score Distribution
               </h3>
-              <div className="grid grid-cols-[max-content_1fr] gap-x-1.5 gap-y-0.5 items-center">
-                {Array.from({ length: GUESSES_PER_DAY + 1 }, (_, i) => GUESSES_PER_DAY - i).map((correctCount) => {
-                  const mistakeCount = GUESSES_PER_DAY - correctCount;
-                  const count = (stats.mistakes && stats.mistakes[mistakeCount]) || 0;
-                  const currentRoundMistakes = parseInt(localStorage.getItem('currentRoundMistakes_v2_4guess') || '0');
-                  const currentRoundCorrect = GUESSES_PER_DAY - currentRoundMistakes;
-                  const isCurrentRound = correctCount === currentRoundCorrect;
-                  const maxCount = Math.max(...(stats.mistakes || []), 1);
-                  const barWidth = count > 0 ? (count / maxCount) * 100 : 10;
-
+              <div className="grid grid-cols-[max-content_1fr] gap-x-2.5 gap-y-1 items-center">
+                {(() => {
+                  const sd =
+                    Array.isArray(stats.scoreDistribution) && stats.scoreDistribution.length === 5
+                      ? stats.scoreDistribution.map((n) => Math.max(0, Math.floor(Number(n) || 0)))
+                      : [0, 0, 0, 0, 0];
+                  let lastB = NaN;
+                  try {
+                    const raw = localStorage.getItem('currentRoundScoreBucket_v2_4guess');
+                    if (raw != null) lastB = parseInt(raw, 10);
+                  } catch (_) {}
+                  const maxC = Math.max(...sd, 1);
+                  return SCORE_DISTRIBUTION_TIERS.map(({ emoji, label }, idx) => {
+                    const count = sd[idx] || 0;
+                    const isHighlight = !Number.isNaN(lastB) && lastB === idx;
+                    const barWidth = count > 0 ? (count / maxC) * 100 : 10;
+                    return (
+                      <React.Fragment key={idx}>
+                        <div className="flex items-center gap-1 justify-end">
+                          {emoji ? (
+                            <span className="text-xl leading-none select-none" aria-hidden>{emoji}</span>
+                          ) : (
+                            <span className="w-6 shrink-0" />
+                          )}
+                          <div className="text-right leading-none">
+                            <div className="text-xs font-medium text-gray-400 whitespace-nowrap">{label}</div>
+                          </div>
+                        </div>
+                        <div className="min-w-0 bg-gray-300 rounded-full h-5 relative">
+                          {count > 0 && (
+                            <div
+                              className={`h-5 rounded-full ${isHighlight ? 'bg-green-600' : 'bg-gray-500'}`}
+                              style={{
+                                width: `${barWidth}%`,
+                                backgroundColor: isHighlight ? '#1c6d2a' : undefined,
+                              }}
+                            />
+                          )}
+                          <span className="absolute right-2 top-0 bottom-0 flex items-center text-xs font-medium text-white">{count}</span>
+                        </div>
+                      </React.Fragment>
+                    );
+                  });
+                })()}
+              </div>
+            </div>
+            
+            {/* Longest Words */}
+            <div className="mb-3 mt-4">
+              <h3 className="text-sm font-semibold mb-2 text-center">
+                Longest Words
+              </h3>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-0.5">
+                {[1, 2, 3, 4].map((position) => {
+                  const longestWord = (stats.longestWords && stats.longestWords[position - 1]);
+                  const currentRoundWords = JSON.parse(localStorage.getItem('currentRoundLongestWords_v2_4guess') || '[]');
+                  const isCurrentRound = longestWord && currentRoundWords.some(word =>
+                    word.word === longestWord.word && word.length === longestWord.length
+                  );
                   return (
-                    <React.Fragment key={correctCount}>
-                      <span className="text-xs font-medium text-gray-700 leading-tight text-right tabular-nums w-4">
-                        {correctCount}
+                    <div key={position} className="flex items-center min-w-0 leading-tight">
+                      <span
+                        className={`text-xs min-w-0 leading-tight ${isCurrentRound ? 'font-semibold' : 'text-gray-700'}`}
+                        style={{ color: isCurrentRound ? '#1c6d2a' : undefined }}
+                      >
+                        {longestWord ? `${longestWord.word.charAt(0).toUpperCase() + longestWord.word.slice(1).toLowerCase()} (${longestWord.length})` : '—'}
                       </span>
-                      <div className="min-w-0 bg-gray-300 rounded-full h-3 relative">
-                        {count > 0 && (
-                          <div
-                            className={`h-3 rounded-full ${isCurrentRound ? 'bg-green-600' : 'bg-gray-500'}`}
-                            style={{
-                              width: `${barWidth}%`,
-                              backgroundColor: isCurrentRound ? '#1c6d2a' : undefined,
-                            }}
-                          />
-                        )}
-                        <span className="absolute right-2 -top-0.5 text-xs font-medium text-white">{count}</span>
-                      </div>
-                    </React.Fragment>
+                    </div>
                   );
                 })}
-              </div>
-            </div>
-            
-            {/* High Scores + Longest Words */}
-            <div className="grid grid-cols-2 gap-4 mb-3">
-              <div>
-                <h3 className="text-sm font-semibold mb-1 text-left flex items-center gap-1.5">
-                  <span className="text-base leading-none" aria-hidden>🏆</span>
-                  High Scores
-                </h3>
-                <div className="space-y-1.5">
-                  {[1, 2, 3, 4, 5].map((position) => {
-                    const score = (stats.highestScores && stats.highestScores[position - 1]) || 0;
-                    const currentRoundScore = parseInt(localStorage.getItem('currentRoundScore_v2_4guess') || '0');
-                    const isCurrentRound = score === currentRoundScore && score > 0;
-                    const maxScore = Math.max(...(stats.highestScores || []), 1);
-                    const barWidth = score > 0 ? (score / maxScore) * 100 : 10;
-                    
-                    return (
-                      <div key={position} className="flex items-center">
-                        <div className="flex-1 bg-gray-300 rounded-full h-3 relative">
-                          {score > 0 && (
-                            <div 
-                              className={`h-3 rounded-full ${isCurrentRound ? 'bg-green-600' : 'bg-gray-500'}`}
-                              style={{ 
-                                width: `${barWidth}%`,
-                                backgroundColor: isCurrentRound ? '#1c6d2a' : undefined,
-                              }}
-                            ></div>
-                          )}
-                          <span className="absolute right-2 -top-0.5 text-xs font-medium text-white">
-                            {score}
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-              
-              {/* Longest Words */}
-              <div>
-                <h3 className="text-sm font-semibold mb-1 text-left flex items-center gap-1.5">
-                  <span className="text-base leading-none" aria-hidden>📖</span>
-                  Longest Words
-                </h3>
-                <div className="space-y-0.5">
-                  {[1, 2, 3, 4, 5].map((position) => {
-                    const longestWord = (stats.longestWords && stats.longestWords[position - 1]);
-                    const currentRoundWords = JSON.parse(localStorage.getItem('currentRoundLongestWords_v2_4guess') || '[]');
-                    const isCurrentRound = longestWord && currentRoundWords.some(word => 
-                      word.word === longestWord.word && word.length === longestWord.length
-                    );
-                    
-                    return (
-                      <div key={position} className="flex items-center min-w-0 leading-tight">
-                        <span 
-                          className={`text-xs min-w-0 leading-tight ${isCurrentRound ? 'font-semibold' : 'text-gray-700'}`}
-                          style={{ color: isCurrentRound ? '#1c6d2a' : undefined }}
-                        >
-                          {longestWord ? `${longestWord.word.charAt(0).toUpperCase() + longestWord.word.slice(1).toLowerCase()} (${longestWord.length})` : '—'}
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
               </div>
             </div>
 
