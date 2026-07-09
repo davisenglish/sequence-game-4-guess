@@ -3208,10 +3208,10 @@ export default function WordPuzzleGame() {
                             <div className="text-xs font-medium text-gray-400 whitespace-nowrap">{label}</div>
                           </div>
                         </div>
-                        <div className="min-w-0 bg-gray-300 rounded-full h-5 relative">
+                        <div className="min-w-0 bg-gray-300 rounded-full h-5 relative overflow-hidden">
                           {count > 0 && (
                             <div
-                              className={`h-5 rounded-full ${isHighlight ? 'bg-green-600' : 'bg-gray-500'}`}
+                              className={`absolute left-0 top-0 h-full rounded-r-full ${isHighlight ? 'bg-green-600' : 'bg-gray-500'}`}
                               style={{
                                 width: `${barWidth}%`,
                                 backgroundColor: isHighlight ? '#1c6d2a' : undefined,
