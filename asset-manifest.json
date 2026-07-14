@@ -1,0 +1,15 @@
+{
+  "files": {
+    "main.css": "/sequence-game-4-guess/static/css/main.67a73269.css",
+    "main.js": "/sequence-game-4-guess/static/js/main.835e7465.js",
+    "static/js/453.96453769.chunk.js": "/sequence-game-4-guess/static/js/453.96453769.chunk.js",
+    "index.html": "/sequence-game-4-guess/index.html",
+    "main.67a73269.css.map": "/sequence-game-4-guess/static/css/main.67a73269.css.map",
+    "main.835e7465.js.map": "/sequence-game-4-guess/static/js/main.835e7465.js.map",
+    "453.96453769.chunk.js.map": "/sequence-game-4-guess/static/js/453.96453769.chunk.js.map"
+  },
+  "entrypoints": [
+    "static/css/main.67a73269.css",
+    "static/js/main.835e7465.js"
+  ]
+}
