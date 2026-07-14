@@ -3185,7 +3185,7 @@ export default function WordPuzzleGame() {
                 let className = 'text-lg font-semibold';
                 if (roundScore === 0) {
                   message = 'Better Luck Next Time!';
-                  leftEmoji = rightEmoji = '☘️';
+                  leftEmoji = rightEmoji = '🍀';
                   className += ' text-gray-600';
                 } else if (roundScore <= 9) {
                   message = 'Getting There!';
