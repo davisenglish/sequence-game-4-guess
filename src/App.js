@@ -143,11 +143,11 @@ function coerceMistakesBuckets(m) {
 }
 
 const SCORE_DISTRIBUTION_TIERS = [
-  { emoji: '👑', label: '≥ 40' },
+  { emoji: '🐰', label: '≥ 40' },
   { emoji: '',   label: '30–39' },
   { emoji: '',   label: '20–29' },
   { emoji: '',   label: '10–19' },
-  { emoji: '🐌', label: '1–10' },
+  { emoji: '🐌', label: '1–9' },
 ];
 
 function bucketIndexForScore(score) {
@@ -655,6 +655,66 @@ function computeIconModalShrinkStyle(iconEl, cardEl) {
   };
 }
 
+function FloatingEmojis({ emojis, onDone }) {
+  const particles = React.useMemo(() => {
+    return Array.from({ length: 22 }, (_, i) => ({
+      id: i,
+      emoji: emojis[Math.floor(Math.random() * emojis.length)],
+      left: `${3 + Math.random() * 94}%`,
+      delay: Math.random() * 1.1,
+      size: 1.4 + Math.random() * 1.0,
+    }));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  React.useEffect(() => {
+    const t = setTimeout(onDone, 3400);
+    return () => clearTimeout(t);
+  }, [onDone]);
+
+  return (
+    <>
+      <style>{`
+        @keyframes emojiFloatUp {
+          0%   { transform: translateY(0); opacity: 1; }
+          72%  { opacity: 1; }
+          100% { transform: translateY(-115vh); opacity: 0; }
+        }
+      `}</style>
+      <div
+        style={{ position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 999999, overflow: 'hidden' }}
+        aria-hidden="true"
+      >
+        {particles.map(({ id, emoji, left, delay, size }) => (
+          <span
+            key={id}
+            style={{
+              position: 'absolute',
+              bottom: '-8%',
+              left,
+              fontSize: `${size}rem`,
+              animation: `emojiFloatUp 2.5s ${delay}s ease-out forwards`,
+              lineHeight: 1,
+              userSelect: 'none',
+            }}
+          >
+            {emoji}
+          </span>
+        ))}
+      </div>
+    </>
+  );
+}
+
+function celebrationEmojisForScore(score) {
+  if (score <= 0) return null;
+  if (score <= 9)  return ['😏'];
+  if (score <= 19) return ['😊'];
+  if (score <= 29) return ['🤩'];
+  if (score <= 39) return ['😍'];
+  return ['🥳', '🎉'];
+}
+
 export default function WordPuzzleGame() {
   const [letters, setLetters] = useState('');
   const [roundStarted, setRoundStarted] = useState(false);
@@ -675,6 +735,7 @@ export default function WordPuzzleGame() {
   const [showStats, setShowStats] = useState(false);
   /** When true, Statistics modal shows the round result banner (Better Luck / Nicely Done / …). Shown after a finished round, game-over stats, or Behold Your Work — not from home/mid-game stats alone. */
   const [statsShowGameResultBanner, setStatsShowGameResultBanner] = useState(false);
+  const [celebrationEmojis, setCelebrationEmojis] = useState(null);
   const [showInstructions, setShowInstructions] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [stats, setStats] = useState({
@@ -854,6 +915,9 @@ export default function WordPuzzleGame() {
         setTimeout(() => {
           setStatsShowGameResultBanner(true);
           openStatsModal();
+          const roundScore = parseInt(localStorage.getItem('currentRoundScore_v2_4guess') || '0', 10);
+          const emojis = celebrationEmojisForScore(roundScore);
+          if (emojis) setCelebrationEmojis(emojis);
         }, 500);
       }, 600); // Slightly longer than the dot animation duration
     }
@@ -1141,6 +1205,9 @@ export default function WordPuzzleGame() {
     setTimeout(() => {
       setStatsShowGameResultBanner(true);
       openStatsModal();
+      const roundScore = parseInt(String(snap.score ?? 0), 10);
+      const emojis = celebrationEmojisForScore(roundScore);
+      if (emojis) setCelebrationEmojis(emojis);
     }, 500);
   };
 
@@ -1191,8 +1258,8 @@ export default function WordPuzzleGame() {
           : input;
       const word = (typeof currentInput === 'string' ? currentInput : '').trim().toLowerCase();
       if (!word) { setError(true); setErrorMessage('Please enter a word'); setInput(''); inputValueRef.current = ''; return; }
-      if (validWords.some(v => v.word === word)) { setError(true); setErrorMessage('Already guessed'); setInput(''); inputValueRef.current = ''; return; }
-      if (word.length < 5) { setError(true); setErrorMessage('Must be 5+ letters long'); setInput(''); inputValueRef.current = ''; return; }
+      if (validWords.some(v => v.word === word)) { setError(true); setErrorMessage('Already guessed'); return; }
+      if (word.length < 5) { setError(true); setErrorMessage('Must be 5+ letters long'); return; }
     
     if (!isSequential(word, letters)) { 
       setError(true); 
@@ -1205,8 +1272,6 @@ export default function WordPuzzleGame() {
     if (isSwearWord(word)) {
       setError(true);
       setErrorMessage('Cuss words do not count');
-      setInput('');
-      inputValueRef.current = '';
       return;
     }
     if (!(await isValidWord(word))) { 
@@ -1350,6 +1415,8 @@ export default function WordPuzzleGame() {
     setTimeout(() => {
       setStatsShowGameResultBanner(true);
       openStatsModal();
+      const emojis = celebrationEmojisForScore(score);
+      if (emojis) setCelebrationEmojis(emojis);
     }, 500);
   };
 
@@ -1876,6 +1943,12 @@ export default function WordPuzzleGame() {
 
   return (
     <div className={isMobile ? 'flex flex-col min-h-0' : ''}>
+      {celebrationEmojis && (
+        <FloatingEmojis
+          emojis={celebrationEmojis}
+          onDone={() => setCelebrationEmojis(null)}
+        />
+      )}
       <div
         className={
           isMobile
@@ -3102,23 +3175,33 @@ export default function WordPuzzleGame() {
             {statsShowGameResultBanner &&
               (() => {
                 const raw = localStorage.getItem('currentRoundMistakes_v2_4guess');
-                const currentRoundMistakes = raw != null ? parseInt(raw, 10) : GUESSES_PER_DAY;
-                const correctCount = Math.min(GUESSES_PER_DAY, Math.max(0, GUESSES_PER_DAY - currentRoundMistakes));
+                const roundScore = parseInt(
+                  localStorage.getItem('currentRoundScore_v2_4guess') || '0',
+                  10
+                );
                 let message = null;
                 let leftEmoji = '';
                 let rightEmoji = '';
                 let className = 'text-lg font-semibold';
-                if (correctCount === 0) {
+                if (roundScore === 0) {
                   message = 'Better Luck Next Time!';
                   leftEmoji = rightEmoji = '☘️';
                   className += ' text-gray-600';
-                } else if (correctCount <= 2) {
+                } else if (roundScore <= 9) {
+                  message = 'Getting There!';
+                  leftEmoji = rightEmoji = '😏';
+                  className += ' text-green-700';
+                } else if (roundScore <= 19) {
                   message = 'Nicely Done!';
                   leftEmoji = rightEmoji = '😊';
                   className += ' text-green-700';
-                } else if (correctCount < GUESSES_PER_DAY) {
+                } else if (roundScore <= 29) {
                   message = 'Great Job!';
                   leftEmoji = rightEmoji = '🤩';
+                  className += ' text-green-700';
+                } else if (roundScore <= 39) {
+                  message = 'Stupendous!';
+                  leftEmoji = rightEmoji = '😍';
                   className += ' text-green-700';
                 } else {
                   message = 'Perfect!';
@@ -3126,12 +3209,8 @@ export default function WordPuzzleGame() {
                   rightEmoji = '🎉';
                   className += ' text-green-700';
                 }
-                const roundScore = parseInt(
-                  localStorage.getItem('currentRoundScore_v2_4guess') || '0',
-                  10
-                );
                 const winScores = Array.isArray(stats.winScores) ? stats.winScores : [];
-                const showTrend = correctCount > 0 && winScores.length >= 2;
+                const showTrend = roundScore > 0 && winScores.length >= 2;
                 const prevScores = winScores.slice(0, -1);
                 const avgScore = showTrend
                   ? Math.round(prevScores.reduce((s, n) => s + n, 0) / prevScores.length)
@@ -3250,24 +3329,29 @@ export default function WordPuzzleGame() {
               <h3 className="text-sm font-semibold mb-2 text-center">
                 Longest Words
               </h3>
-              <div className="grid grid-cols-2 gap-x-4 gap-y-0.5">
-                {[1, 2, 3, 4].map((position) => {
-                  const longestWord = (stats.longestWords && stats.longestWords[position - 1]);
-                  const currentRoundWords = JSON.parse(localStorage.getItem('currentRoundLongestWords_v2_4guess') || '[]');
-                  const isCurrentRound = longestWord && currentRoundWords.some(word =>
-                    word.word === longestWord.word && word.length === longestWord.length
-                  );
-                  return (
-                    <div key={position} className="flex items-center min-w-0 leading-tight">
-                      <span
-                        className={`text-xs min-w-0 leading-tight ${isCurrentRound ? 'font-semibold' : 'text-gray-700'}`}
-                        style={{ color: isCurrentRound ? '#1c6d2a' : undefined }}
-                      >
-                        {longestWord ? `${longestWord.word.charAt(0).toUpperCase() + longestWord.word.slice(1).toLowerCase()} (${longestWord.length})` : '—'}
-                      </span>
-                    </div>
-                  );
-                })}
+              <div className="flex gap-4">
+                {[[1, 2], [3, 4]].map((pair, colIdx) => (
+                  <div key={colIdx} className="flex-1 space-y-0.5">
+                    {pair.map((position) => {
+                      const longestWord = stats.longestWords && stats.longestWords[position - 1];
+                      const currentRoundWords = JSON.parse(localStorage.getItem('currentRoundLongestWords_v2_4guess') || '[]');
+                      const isCurrentRound = longestWord && currentRoundWords.some(word =>
+                        word.word === longestWord.word && word.length === longestWord.length
+                      );
+                      return (
+                        <div key={position} className="flex items-center gap-1 min-w-0 leading-tight">
+                          <span className="text-xs text-gray-400 tabular-nums shrink-0">{position}.</span>
+                          <span
+                            className={`text-xs min-w-0 leading-tight ${isCurrentRound ? 'font-semibold' : 'text-gray-700'}`}
+                            style={{ color: isCurrentRound ? '#1c6d2a' : undefined }}
+                          >
+                            {longestWord ? `${longestWord.word.charAt(0).toUpperCase() + longestWord.word.slice(1).toLowerCase()} (${longestWord.length})` : '—'}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
               </div>
             </div>
 
