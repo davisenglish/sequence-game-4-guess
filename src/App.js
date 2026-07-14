@@ -668,7 +668,7 @@ function FloatingEmojis({ emojis, onDone }) {
   }, []);
 
   React.useEffect(() => {
-    const t = setTimeout(onDone, 3400);
+    const t = setTimeout(onDone, 4800);
     return () => clearTimeout(t);
   }, [onDone]);
 
@@ -693,7 +693,7 @@ function FloatingEmojis({ emojis, onDone }) {
               bottom: '-8%',
               left,
               fontSize: `${size}rem`,
-              animation: `emojiFloatUp 2.5s ${delay}s ease-out forwards`,
+              animation: `emojiFloatUp 3.5s ${delay}s ease-out forwards`,
               lineHeight: 1,
               userSelect: 'none',
             }}
