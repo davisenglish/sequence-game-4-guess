@@ -281,6 +281,25 @@ function markDailyAbandonedForLocalDate(dateStr) {
   } catch (_) {}
 }
 
+/** Convert a YYYY-MM-DD date string to an integer day offset from a fixed epoch. */
+function puzzleDateToInt(puzzleDateStr) {
+  const [y, m, d] = puzzleDateStr.split('-').map(Number);
+  return Math.floor((new Date(y, m - 1, d) - new Date(2020, 0, 1)) / 86400000);
+}
+
+/**
+ * Wang hash — good avalanche properties for integers.
+ * Consecutive day numbers produce wildly different outputs,
+ * avoiding the sequential-index bug that djb2 has on date strings.
+ */
+function wangHashInt(n) {
+  let x = n ^ 0xdeadbeef;
+  x = Math.imul(x ^ (x >>> 16), 0x45d9f3b);
+  x = Math.imul(x ^ (x >>> 16), 0x45d9f3b);
+  x = x ^ (x >>> 16);
+  return Math.abs(x);
+}
+
 /** Same letters for every player sharing the same local calendar date string (deterministic from CSV pool). */
 async function getDailyLetters(puzzleDateStr) {
   const data = await loadTripletsData();
@@ -289,8 +308,7 @@ async function getDailyLetters(puzzleDateStr) {
   }
   const filteredData = data.filter((item) => item.frequency >= 10);
   const pool = filteredData.length > 0 ? filteredData : data;
-  const h = hashStringToInt(`stringlich5-daily-${puzzleDateStr}`);
-  const idx = h % pool.length;
+  const idx = wangHashInt(puzzleDateToInt(puzzleDateStr)) % pool.length;
   return pool[idx].letters;
 }
 
