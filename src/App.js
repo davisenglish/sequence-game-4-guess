@@ -1,7 +1,7 @@
 // Required dependencies: react, @fortawesome/react-fontawesome, @fortawesome/free-solid-svg-icons
 // Tailwind CSS is used for styling (optional, or replace with your own CSS)
 // Drop this file into your React project and import/use <WordPuzzleGame />
-import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useId, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faCircleInfo, faChartSimple, faCheckCircle, faTimesCircle, faCircleQuestion, faHouseChimney, faList, faShareNodes, faChevronDown, faXmark, faEnvelope, faBug } from '@fortawesome/free-solid-svg-icons';
@@ -143,12 +143,22 @@ function coerceMistakesBuckets(m) {
 }
 
 const SCORE_DISTRIBUTION_TIERS = [
-  { emoji: '🐰', label: '≥ 40' },
-  { emoji: '',   label: '30–39' },
-  { emoji: '',   label: '20–29' },
-  { emoji: '',   label: '10–19' },
-  { emoji: '🐌', label: '1–9' },
+  { label: '≥ 40' },
+  { label: '30–39' },
+  { label: '20–29' },
+  { label: '10–19' },
+  { label: '1–9' },
 ];
+
+/**
+ * Row geometry for the distribution grid, in px. SpeedTierRail positions itself against these,
+ * so a change here has to keep the bar height and row gap in sync with the grid below.
+ */
+const DIST_ROW_H = 20;
+const DIST_ROW_GAP = 4;
+const DIST_ROW_PITCH = DIST_ROW_H + DIST_ROW_GAP;
+const DIST_ROW_COUNT = 5;
+const distRowCenter = (i) => i * DIST_ROW_PITCH + DIST_ROW_H / 2;
 
 function bucketIndexForScore(score) {
   const s = Math.max(0, Math.floor(Number(score) || 0));
@@ -597,6 +607,109 @@ function PossibleAnswersFromCsv({ letters, max = 4, className = '', puzzleDate }
   );
 }
 
+/**
+ * "Possible answers" panel that eases open and closed instead of snapping like a native <details>.
+ * Panels marked `defaultOpen` animate open just after mount, so a panel that opens itself on the
+ * game over screen looks the same as one the player taps.
+ */
+function PossibleAnswersDisclosure({
+  defaultOpen = false,
+  className = '',
+  openClassName = '',
+  closedClassName = '',
+  summaryClassName = '',
+  summaryStyle,
+  children,
+}) {
+  const [open, setOpen] = useState(false);
+  const panelRef = useRef(null);
+  const panelId = useId();
+
+  useEffect(() => {
+    if (!defaultOpen) return;
+    // Resolve the closed height first, otherwise the panel jumps straight to open with no transition.
+    void panelRef.current?.getBoundingClientRect().height;
+    setOpen(true);
+  }, [defaultOpen]);
+
+  return (
+    <div className={`${className} transition-colors duration-300 ${open ? openClassName : closedClassName}`}>
+      <button
+        type="button"
+        onClick={() => setOpen((prev) => !prev)}
+        aria-expanded={open}
+        aria-controls={panelId}
+        className={`flex w-full cursor-pointer items-center justify-between gap-2 text-left ${summaryClassName}`}
+        style={summaryStyle}
+      >
+        <span className="font-medium text-gray-500">Possible answers</span>
+        <FontAwesomeIcon
+          icon={faChevronDown}
+          className={`text-gray-400 text-[10px] shrink-0 transition-transform duration-300 ${open ? 'rotate-180' : ''}`}
+          aria-hidden
+        />
+      </button>
+      <div
+        id={panelId}
+        ref={panelRef}
+        className="grid transition-[grid-template-rows] duration-300 ease-out motion-reduce:transition-none"
+        style={{ gridTemplateRows: open ? '1fr' : '0fr' }}
+      >
+        <div className={`overflow-hidden transition-opacity duration-300 ${open ? 'opacity-100' : 'opacity-0'}`}>
+          <div className="mt-2.5 border-t border-gray-100/90 pt-2.5">{children}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Vertical scale for the Score Distribution rows: fast at the top, slow at the bottom, joined by
+ * a rail with a tick per tier so the two emoji read as ends of one continuum.
+ */
+function SpeedTierRail({ fastEmoji, fastLabel, slowEmoji, slowLabel }) {
+  const topCenter = distRowCenter(0);
+  const bottomCenter = distRowCenter(DIST_ROW_COUNT - 1);
+  const railTop = topCenter + 12;
+  const railHeight = bottomCenter - 12 - railTop;
+  return (
+    <div
+      className="relative shrink-0 select-none"
+      style={{ width: 26, height: DIST_ROW_COUNT * DIST_ROW_PITCH - DIST_ROW_GAP }}
+    >
+      <span
+        className="absolute left-0 right-0 text-center text-lg leading-none"
+        style={{ top: topCenter, transform: 'translateY(-50%)' }}
+        role="img"
+        aria-label={fastLabel}
+      >
+        {fastEmoji}
+      </span>
+      <span
+        className="absolute rounded-full bg-gray-200"
+        style={{ left: 12, top: railTop, width: 2, height: railHeight }}
+        aria-hidden
+      />
+      {Array.from({ length: DIST_ROW_COUNT - 2 }, (_, i) => i + 1).map((i) => (
+        <span
+          key={i}
+          className="absolute rounded-full bg-gray-300"
+          style={{ left: 8, top: distRowCenter(i) - 1, width: 10, height: 2 }}
+          aria-hidden
+        />
+      ))}
+      <span
+        className="absolute left-0 right-0 text-center text-lg leading-none"
+        style={{ top: bottomCenter, transform: 'translateY(-50%)' }}
+        role="img"
+        aria-label={slowLabel}
+      >
+        {slowEmoji}
+      </span>
+    </div>
+  );
+}
+
 /** L–I–N in game colors (rules wizard steps 1–3) */
 function RulesWizardLinShapes() {
   return (
@@ -887,6 +1000,9 @@ export default function WordPuzzleGame() {
   const backspaceHoldIntervalRef = useRef(null);
   const prevScoreRef = useRef(0);
   const isSubmittingRef = useRef(false);
+  // Mobile Submit commits on release: armed on pointerdown, cancelled if the finger lifts outside the key.
+  const submitArmedRef = useRef(false);
+  const submitInsideRef = useRef(false);
   useEffect(() => {
     loadWordList();
     (async () => {
@@ -2049,6 +2165,10 @@ export default function WordPuzzleGame() {
     return <div className="w-full min-h-[100dvh]" />;
   }
 
+  // A guess is only gradeable at 5+ letters. Mobile disables Submit below that so a mis-tap costs
+  // nothing; desktop keeps it pressable but renders it inactive, so the error still teaches the rule.
+  const submitReady = (((typeof input === 'string' ? input : inputValueRef.current) || '').trim()).length >= 5;
+
   return (
     <div className={isMobile ? 'flex flex-col min-h-0' : ''}>
       {celebrationEmojis && (
@@ -2583,7 +2703,7 @@ export default function WordPuzzleGame() {
                 </div>
                 {!isMobile && (
               <div className="relative inline-block">
-                <button onClick={handleSubmit} style={{backgroundColor:'#195b7c'}} className="text-white px-4 py-2 rounded text-lg disabled:opacity-50" disabled={!roundStarted||gameOver}>Submit</button>
+                <button onClick={handleSubmit} style={{border:'2px solid #374151', color:'#374151', opacity: submitReady ? undefined : 0.5}} className="bg-white hover:bg-gray-100 active:bg-gray-200 px-4 py-2 rounded text-lg font-semibold disabled:opacity-50" disabled={!roundStarted||gameOver}>Submit</button>
               </div>
           )}
               </div>
@@ -2616,12 +2736,14 @@ export default function WordPuzzleGame() {
         }
         gapPx = Math.max(gapMin, Math.min(gapMax, Math.round(gapPx)));
         const rowGapPx = Math.round(gapPx * 1.6);
+        // Fixed (unscaled) gutter isolating Submit from the Z-M row so a low tap on a letter can't reach it.
+        const submitGapPx = 14;
         const letterW = Math.round(keyBaseWidth * scale);
         const keyPadding = 4;
         const containerPaddingH = 8;
         const containerPaddingB = 8;
         const maxKeyboardHeight = typeof vh === 'number' && vh > 0 ? Math.min(vh * 0.4, 350) : 350;
-        const nonKeyVertical = 8 + containerPaddingB + 2 * rowGapPx;
+        const nonKeyVertical = 8 + containerPaddingB + 2 * rowGapPx + submitGapPx;
         const maxLetterHeightFromContainer = Math.floor((maxKeyboardHeight - nonKeyVertical) / 4);
         const unconstrainedLetterH = Math.round(keyBaseHeight * scale);
         const letterH = Math.max(30, Math.min(60, unconstrainedLetterH, maxLetterHeightFromContainer));
@@ -2637,6 +2759,7 @@ export default function WordPuzzleGame() {
         const popupH = Math.round(letterH * popupScale);
         const popupGap = 4;
         const keyBg = '#e5e7eb';
+        const submitEnabled = roundStarted && !gameOver && submitReady;
         const triUpper = (letters && String(letters).toUpperCase()) || '';
         // Build a map of letter → array of position colors (in order), allowing duplicates
         const mobileProvidedLetterColors = {};
@@ -2665,6 +2788,10 @@ export default function WordPuzzleGame() {
             }
           });
           return `linear-gradient(to right, ${stops.join(', ')})`;
+        };
+        const isPointerOverTarget = (event) => {
+          const r = event.currentTarget.getBoundingClientRect();
+          return event.clientX >= r.left && event.clientX <= r.right && event.clientY >= r.top && event.clientY <= r.bottom;
         };
         const findNearestIndexByCenters = (x, widths, gap) => {
           let cursor = 0;
@@ -2893,7 +3020,7 @@ export default function WordPuzzleGame() {
               })}
                 </div>
             {/* Bottom row: Shift + Z-M + Backspace */}
-            <div className="flex justify-center relative flex-nowrap" style={{ gap: gapPx, marginBottom: rowGapPx }} onPointerDown={handleBottomRowBackgroundPointerDown} onPointerUp={handleBottomRowPointerUpOrCancel} onPointerCancel={handleBottomRowPointerUpOrCancel}>
+            <div className="flex justify-center relative flex-nowrap" style={{ gap: gapPx }} onPointerDown={handleBottomRowBackgroundPointerDown} onPointerUp={handleBottomRowPointerUpOrCancel} onPointerCancel={handleBottomRowPointerUpOrCancel}>
               <div style={{ position: 'relative', width: specialWidth, height: specialHeight, flexShrink: 0 }}>
                 <button
                   type="button"
@@ -3018,13 +3145,31 @@ export default function WordPuzzleGame() {
                 </button>
               </div>
             </div>
-            {/* Submit: span from Z to M, same height as keys; only clickable within button */}
-            <div className="w-full mt-0.5 flex justify-center">
+            {/* Submit: spans Z to M, sits below a fixed gutter, and commits on release so a finger that
+                lands here by mistake can slide off to cancel. Whole key is tappable. */}
+            <div className="w-full flex justify-center" style={{ marginTop: submitGapPx }}>
               <button
                 type="button"
                 onPointerDown={(e) => {
                   e.preventDefault(); e.stopPropagation();
+                  submitArmedRef.current = true;
+                  submitInsideRef.current = true;
                   setPressedKey('submit');
+                }}
+                onPointerMove={(e) => {
+                  if (!submitArmedRef.current) return;
+                  const inside = isPointerOverTarget(e);
+                  if (inside === submitInsideRef.current) return;
+                  submitInsideRef.current = inside;
+                  setPressedKey(inside ? 'submit' : null);
+                }}
+                onPointerUp={(e) => {
+                  e.preventDefault(); e.stopPropagation();
+                  setPressedKey(null);
+                  if (!submitArmedRef.current) return;
+                  submitArmedRef.current = false;
+                  // Lifted outside the key: the press was cancelled, so don't spend a guess.
+                  if (!isPointerOverTarget(e)) { refocusInputSoon(); return; }
                   mobileShiftActiveRef.current = false;
                   mobileCapsLockRef.current = false;
                   setMobileShiftActive(false);
@@ -3033,10 +3178,14 @@ export default function WordPuzzleGame() {
                   handleSubmit(e, val);
                   refocusInputSoon();
                 }}
-                onPointerUp={(e) => { e.preventDefault(); e.stopPropagation(); setPressedKey(null); }}
-                onPointerCancel={(e) => { e.preventDefault(); e.stopPropagation(); setPressedKey(null); }}
-                className="bg-gray-200 hover:bg-gray-300 active:bg-gray-400 text-black rounded-lg text-base font-semibold disabled:opacity-50 touch-manipulation"
-                disabled={!roundStarted || gameOver}
+                onPointerCancel={(e) => {
+                  e.preventDefault(); e.stopPropagation();
+                  submitArmedRef.current = false;
+                  setPressedKey(null);
+                }}
+                className="rounded-lg text-base font-semibold disabled:opacity-50 touch-manipulation"
+                disabled={!submitEnabled}
+                aria-label={submitReady ? 'Submit' : 'Submit (enter at least 5 letters)'}
                 style={{
                   touchAction: 'manipulation',
                   userSelect: 'none',
@@ -3048,11 +3197,16 @@ export default function WordPuzzleGame() {
                   position: 'relative',
                   zIndex: pressedKey === 'submit' ? 10 : 2,
                   transform: pressedKey === 'submit' ? 'scale(1.02)' : 'scale(1)',
-                  transition: 'transform 0.1s ease-out',
+                  transition: 'transform 0.1s ease-out, background-color 0.1s ease-out, color 0.1s ease-out',
                   width: submitWidth,
                   height: letterH,
                   minHeight: letterH,
-                  backgroundColor: pressedKey === 'submit' ? 'rgb(156, 163, 175)' : undefined,
+                  boxSizing: 'border-box',
+                  // Outlined and achromatic: differentiates from the solid gray keys by treatment rather
+                  // than hue, so it adds no color. The fill only appears while pressed, as commit feedback.
+                  border: '2px solid #374151',
+                  backgroundColor: pressedKey === 'submit' ? '#374151' : '#ffffff',
+                  color: pressedKey === 'submit' ? '#ffffff' : '#374151',
                 }}
               >
                 Submit
@@ -3150,29 +3304,22 @@ export default function WordPuzzleGame() {
               </div>
             </div>
           </div>
-          {/* Possible answers — collapsed by default (matches my-app-ver4); lengths shown per answer */}
+          {/* Possible answers — collapsed by default (matches my-app-ver4), but opens itself when no guess landed */}
           <div className={`w-full min-w-0 max-w-md mx-auto text-left ${showRevealAnimation ? 'reveal-content' : ''}`}>
-            <details className="group rounded-md border border-gray-200/80 px-3 py-2.5 open:border-gray-200/90 open:bg-white/50 transition-colors">
-              <summary
-                className="flex cursor-pointer list-none items-center justify-between gap-2 text-left [&::-webkit-details-marker]:hidden"
-                style={{ fontSize: 'calc(0.875rem * 0.576 + 6pt * 0.576)' }}
-              >
-                <span className="font-medium text-gray-500">Possible answers</span>
-                <FontAwesomeIcon
-                  icon={faChevronDown}
-                  className="text-gray-400 text-[10px] shrink-0 transition-transform duration-200 group-open:rotate-180"
-                  aria-hidden
-                />
-              </summary>
-              <div className="mt-2.5 border-t border-gray-100/90 pt-2.5">
-                <PossibleAnswersFromCsv
-                  letters={letters}
-                  max={4}
-                  puzzleDate={getLocalDateString()}
-                  className="justify-start"
-                />
-              </div>
-            </details>
+            <PossibleAnswersDisclosure
+              defaultOpen={!validWords.some((w) => w.isValid)}
+              className="rounded-md border px-3 py-2.5"
+              openClassName="border-gray-200/90 bg-white/50"
+              closedClassName="border-gray-200/80"
+              summaryStyle={{ fontSize: 'calc(0.875rem * 0.576 + 6pt * 0.576)' }}
+            >
+              <PossibleAnswersFromCsv
+                letters={letters}
+                max={4}
+                puzzleDate={getLocalDateString()}
+                className="justify-start"
+              />
+            </PossibleAnswersDisclosure>
           </div>
           <div className={`flex flex-col items-center space-y-3 ${showRevealAnimation ? 'reveal-content' : ''}`}>
             <a
@@ -3387,7 +3534,20 @@ export default function WordPuzzleGame() {
               <h3 className="text-sm font-semibold mb-2 flex justify-center items-center gap-1.5">
                 Score Distribution
               </h3>
-              <div className="grid grid-cols-[max-content_1fr] gap-x-2.5 gap-y-1 items-center">
+              <div className="flex items-start justify-center gap-2">
+                <SpeedTierRail
+                  fastEmoji="🐰"
+                  fastLabel="Highest scores"
+                  slowEmoji="🐌"
+                  slowLabel="Lowest scores"
+                />
+                <div
+                  className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-2 items-center flex-1 min-w-0"
+                  style={{
+                    gridTemplateRows: `repeat(${DIST_ROW_COUNT}, ${DIST_ROW_H}px)`,
+                    rowGap: DIST_ROW_GAP,
+                  }}
+                >
                 {(() => {
                   const sd =
                     Array.isArray(stats.scoreDistribution) && stats.scoreDistribution.length === 5
@@ -3399,21 +3559,14 @@ export default function WordPuzzleGame() {
                     if (raw != null) lastB = parseInt(raw, 10);
                   } catch (_) {}
                   const maxC = Math.max(...sd, 1);
-                  return SCORE_DISTRIBUTION_TIERS.map(({ emoji, label }, idx) => {
+                  return SCORE_DISTRIBUTION_TIERS.map(({ label }, idx) => {
                     const count = sd[idx] || 0;
                     const isHighlight = !Number.isNaN(lastB) && lastB === idx;
                     const barWidth = count > 0 ? (count / maxC) * 100 : 10;
                     return (
                       <React.Fragment key={idx}>
-                        <div className="flex items-center gap-1 justify-end">
-                          {emoji ? (
-                            <span className="text-xl leading-none select-none" aria-hidden>{emoji}</span>
-                          ) : (
-                            <span className="w-6 shrink-0" />
-                          )}
-                          <div className="text-right leading-none">
-                            <div className="text-xs font-medium text-gray-400 whitespace-nowrap">{label}</div>
-                          </div>
+                        <div className="text-xs font-medium text-gray-400 whitespace-nowrap text-right leading-none tabular-nums">
+                          {label}
                         </div>
                         <div className="min-w-0 bg-gray-300 rounded-full h-5 relative overflow-hidden">
                           {count > 0 && (
@@ -3431,6 +3584,7 @@ export default function WordPuzzleGame() {
                     );
                   });
                 })()}
+                </div>
               </div>
             </div>
             
@@ -3968,7 +4122,7 @@ export default function WordPuzzleGame() {
               Report a Bug
             </button>
           </div>
-          <p className="text-gray-500 italic text-sm leading-tight">© 2026 Davis English. All Rights Reserved.</p>
+          <p className="text-gray-500 italic text-sm leading-tight">© {new Date().getFullYear()} Davis English. All Rights Reserved.</p>
         </footer>
       )}
     </div>
